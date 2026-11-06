@@ -30,7 +30,8 @@ import {
   Eraser,
   Square,
   Highlighter,
-  MousePointer
+  MousePointer,
+  Wand2
 } from 'lucide-react';
 import {
   TEXTBOOK_LESSONS,
@@ -44,7 +45,12 @@ import {
   deleteStoredPdfById,
   StoredPdfFile
 } from '../utils/localStorageDB';
-import { distance, midpoint } from '../utils/geometryMath';
+import {
+  distance,
+  midpoint,
+  recognizeSmartStroke,
+  snapSmartLineEndpoint
+} from '../utils/geometryMath';
 
 // Use self-hosted local pdf.worker.min.mjs from /public/pdfjs/
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
@@ -52,6 +58,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
 type OverlayTool =
   | 'pan'
   | 'select'
+  | 'smart-pen'
   | 'pen'
   | 'highlighter'
   | 'eraser'
@@ -73,6 +80,8 @@ interface PdfReaderWorkspaceProps {
   initialBookPage?: number;
   onOpen2DStudio: (presetId: string) => void;
   onOpen3DLab: (mode: 'cross-section' | 'revolution' | 'space-lines' | 'voxels') => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 // Group lessons by chapter for the sidebar TOC
@@ -112,6 +121,8 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   initialBookPage = 10,
   onOpen2DStudio,
   onOpen3DLab,
+  isFullscreen = false,
+  onToggleFullscreen,
 }) => {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPdfPage, setCurrentPdfPage] = useState<number>(initialBookPage + 1);
@@ -123,9 +134,8 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   const [activePdfTitle, setActivePdfTitle] = useState<string>('کتاب درسی هندسه ۱ (پایه دهم)');
   const [isDefaultTextbook, setIsDefaultTextbook] = useState<boolean>(true);
 
-  // Sidebar collapse & Fullscreen state
+  // Sidebar collapse state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
   // Local PDF Library (IndexedDB)
   const [savedPdfs, setSavedPdfs] = useState<Omit<StoredPdfFile, 'data'>[]>([]);
@@ -133,7 +143,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
 
   // Interactive Geometry & Whiteboard Overlay over PDF
   const [overlayEnabled, setOverlayEnabled] = useState<boolean>(true);
-  const [activeTool, setActiveTool] = useState<OverlayTool>('segment');
+  const [activeTool, setActiveTool] = useState<OverlayTool>('smart-pen');
   const [strokeColor, setStrokeColor] = useState<string>('#0284C7');
   const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
   const [pageAnnotations, setPageAnnotations] = useState<Record<number, OverlayStroke[]>>(() => {
@@ -187,32 +197,18 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     refreshLibrary();
   }, [refreshLibrary]);
 
-  // Toggle Fullscreen (supports both browser Fullscreen API and fallback CSS Fullscreen)
+  // Toggle Fullscreen (delegates to App.tsx root Fullscreen so switching tabs never exits Fullscreen)
   const toggleFullscreen = () => {
-    if (!isFullscreen) {
-      setIsFullscreen(true);
-      if (containerRef.current && containerRef.current.requestFullscreen) {
-        containerRef.current.requestFullscreen().catch(() => {
-          // CSS fullscreen fallback is already active via isFullscreen
-        });
-      }
-    } else {
-      setIsFullscreen(false);
-      if (document.fullscreenElement && document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {});
-      }
+    if (onToggleFullscreen) {
+      onToggleFullscreen();
+      return;
+    }
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
     }
   };
-
-  useEffect(() => {
-    const onFsChange = () => {
-      if (!document.fullscreenElement) {
-        setIsFullscreen(false);
-      }
-    };
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, []);
 
   // Load default textbook PDF using cached ArrayBuffer + local /pdfjs/ assets
   const loadDefaultTextbook = useCallback(async () => {
@@ -541,10 +537,10 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
       return;
     }
 
-    if (activeTool === 'pen' || activeTool === 'highlighter') {
+    if (activeTool === 'smart-pen' || activeTool === 'pen' || activeTool === 'highlighter') {
       setDraftStroke({
         id: `stroke-${Date.now()}`,
-        type: activeTool,
+        type: activeTool === 'highlighter' ? 'highlighter' : 'pen',
         points: [pt],
         color: strokeColor,
       });
@@ -608,18 +604,56 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     setIsPointerDown(false);
     setDragLastPt(null);
     if (draftStroke) {
+      let finalStroke: OverlayStroke = draftStroke;
+
+      // Smart Pen recognition on PDF overlay
+      if (activeTool === 'smart-pen' && draftStroke.points.length >= 6) {
+        const recognized = recognizeSmartStroke(draftStroke.points);
+        if (recognized.kind === 'circle') {
+          finalStroke = {
+            id: `smart-cir-${Date.now()}`,
+            type: 'circle',
+            points: [
+              recognized.center,
+              { x: recognized.center.x + recognized.radius, y: recognized.center.y },
+            ],
+            color: strokeColor,
+          };
+        } else if (recognized.kind === 'segment') {
+          const snappedEnd = snapSmartLineEndpoint(recognized.start, recognized.end, 7);
+          finalStroke = {
+            id: `smart-seg-${Date.now()}`,
+            type: 'segment',
+            points: [recognized.start, snappedEnd.point],
+            color: strokeColor,
+          };
+        } else if (recognized.kind === 'rectangle') {
+          const xs = recognized.vertices.map((v) => v.x);
+          const ys = recognized.vertices.map((v) => v.y);
+          finalStroke = {
+            id: `smart-rect-${Date.now()}`,
+            type: 'rect',
+            points: [
+              { x: Math.min(...xs), y: Math.min(...ys) },
+              { x: Math.max(...xs), y: Math.max(...ys) },
+            ],
+            color: strokeColor,
+          };
+        }
+      }
+
       const isMeaningful =
-        draftStroke.type === 'pen' ||
-        draftStroke.type === 'highlighter' ||
-        (draftStroke.points.length >= 2 &&
-          distance(draftStroke.points[0], draftStroke.points[1]) > 4 / scale);
+        finalStroke.type === 'pen' ||
+        finalStroke.type === 'highlighter' ||
+        (finalStroke.points.length >= 2 &&
+          distance(finalStroke.points[0], finalStroke.points[1]) > 4 / scale);
 
       if (isMeaningful) {
         setPageAnnotations((prev) => ({
           ...prev,
-          [currentPdfPage]: [...(prev[currentPdfPage] || []), draftStroke],
+          [currentPdfPage]: [...(prev[currentPdfPage] || []), finalStroke],
         }));
-        setSelectedStrokeId(draftStroke.id);
+        setSelectedStrokeId(finalStroke.id);
       }
       setDraftStroke(null);
     }
@@ -679,13 +713,11 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`flex w-full bg-[#F8FAFC] overflow-hidden ${
-        isFullscreen ? 'fixed inset-0 z-50 h-screen' : 'h-[calc(100vh-4rem)]'
-      }`}
+      className="flex w-full bg-[#F8FAFC] overflow-hidden h-[calc(100vh-3.5rem)]"
     >
       {/* Collapsible Right Sidebar (RTL): Textbook Chapters & Local PDF Library */}
       {sidebarOpen && (
-        <aside className="w-76 shrink-0 bg-white border-l border-[#E2E8F0] flex flex-col h-full">
+        <aside className="w-72 shrink-0 bg-white border-l border-[#E2E8F0] flex flex-col h-full">
           {/* Document Switcher Header */}
           <div className="p-3.5 border-b border-[#E2E8F0] space-y-2.5">
             <div className="flex items-center justify-between">
@@ -885,10 +917,10 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
 
       {/* Main Center PDF + Transparent Geometry Canvas Area */}
       <div className="flex-1 flex flex-col h-full min-w-0">
-        {/* PDF & Drafting Overlay Toolbar */}
-        <div className="min-h-14 bg-white border-b border-[#E2E8F0] px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto shrink-0">
+        {/* PDF & Drafting Overlay Toolbar (Flex-Wrap, Zero Horizontal Scrollbar) */}
+        <div className="bg-white border-b border-[#E2E8F0] px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0">
           {/* Sidebar Toggle + Page Navigation + Zoom */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1 flex-wrap">
             <button
               onClick={() => setSidebarOpen((v) => !v)}
               className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
@@ -927,7 +959,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                     setCurrentPdfPage(Math.min(Math.max(1, target), totalPages));
                   }
                 }}
-                className="w-13 px-1.5 py-1 text-center font-mono-num font-bold text-[#0F172A] border border-[#CBD5E1] rounded-md focus:outline-none focus:border-[#0284C7]"
+                className="w-12 px-1 py-1 text-center font-mono-num font-bold text-[#0F172A] border border-[#CBD5E1] rounded-md focus:outline-none focus:border-[#0284C7]"
               />
               <span className="text-[#64748B] font-mono-num">
                 / {isDefaultTextbook ? totalPages - 1 : totalPages}
@@ -953,7 +985,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             >
               <ZoomOut className="w-4 h-4 text-[#0F172A]" />
             </button>
-            <span className="text-xs font-mono-num font-semibold text-[#334155] w-11 text-center">
+            <span className="text-xs font-mono-num font-semibold text-[#334155] w-10 text-center">
               {Math.round(scale * 100)}%
             </span>
             <button
@@ -973,10 +1005,10 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
           </div>
 
           {/* Transparent Geometric Overlay Tools (Draw directly on PDF) */}
-          <div className="flex items-center gap-1 bg-[#F8FAFC] p-1 rounded-lg border border-[#E2E8F0] shrink-0">
+          <div className="flex items-center gap-1 bg-[#F8FAFC] p-1 rounded-lg border border-[#E2E8F0] flex-wrap">
             <button
               onClick={() => setOverlayEnabled(!overlayEnabled)}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
                 overlayEnabled
                   ? 'bg-[#0F172A] text-white'
                   : 'text-[#475569] hover:bg-[#E2E8F0]'
@@ -1011,6 +1043,19 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                   title="انتخاب و جابه‌جایی شکل روی کتاب"
                 >
                   <MousePointer className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  onClick={() => setActiveTool('smart-pen')}
+                  className={`px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1 cursor-pointer ${
+                    activeTool === 'smart-pen'
+                      ? 'bg-[#0284C7] text-white shadow-xs'
+                      : 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
+                  }`}
+                  title="قلم هوشمند تشخیص دایره، خط صاف و مستطیل روی PDF"
+                >
+                  <Wand2 className="w-3.5 h-3.5" />
+                  <span>قلم هوشمند ✨</span>
                 </button>
 
                 <button

@@ -376,3 +376,282 @@ export function classifyConicSection(
     descriptionFa: 'زاویه صفحه از شیب یال مخروط بیشتر است (یا عمودی است) و قاعده را نیز قطع می‌کند.',
   };
 }
+
+export type RecognizedShapeResult =
+  | {
+      kind: 'segment';
+      start: Point2D;
+      end: Point2D;
+      labelFa: string;
+    }
+  | {
+      kind: 'circle';
+      center: Point2D;
+      radius: number;
+      labelFa: string;
+    }
+  | {
+      kind: 'triangle';
+      vertices: [Point2D, Point2D, Point2D];
+      labelFa: string;
+    }
+  | {
+      kind: 'rectangle';
+      vertices: [Point2D, Point2D, Point2D, Point2D];
+      isSquare: boolean;
+      labelFa: string;
+    }
+  | {
+      kind: 'angle';
+      vertices: [Point2D, Point2D, Point2D]; // ray BA and ray BC with vertex B
+      deg: number;
+      labelFa: string;
+    }
+  | {
+      kind: 'freehand';
+      labelFa: string;
+    };
+
+function perpendicularDistanceToSegment(pt: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return distance(pt, a);
+  const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / (len * len)));
+  const projX = a.x + t * dx;
+  const projY = a.y + t * dy;
+  return Math.hypot(pt.x - projX, pt.y - projY);
+}
+
+export function rdpSimplify(points: Point2D[], epsilon: number): Point2D[] {
+  if (points.length <= 2) return points;
+  let maxDist = 0;
+  let index = 0;
+  const start = points[0];
+  const end = points[points.length - 1];
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpendicularDistanceToSegment(points[i], start, end);
+    if (d > maxDist) {
+      index = i;
+      maxDist = d;
+    }
+  }
+
+  if (maxDist > epsilon) {
+    const left = rdpSimplify(points.slice(0, index + 1), epsilon);
+    const right = rdpSimplify(points.slice(index), epsilon);
+    return [...left.slice(0, -1), ...right];
+  }
+  return [start, end];
+}
+
+export function snapSmartLineEndpoint(
+  start: Point2D,
+  end: Point2D,
+  snapAngleThresholdDeg = 6
+): { point: Point2D; snappedAngleDeg: number | null } {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const r = Math.hypot(dx, dy);
+  if (r < 10) return { point: end, snappedAngleDeg: null };
+
+  const rawDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const targets = [-180, -150, -135, -120, -90, -60, -45, -30, 0, 30, 45, 60, 90, 120, 135, 150, 180];
+
+  for (const t of targets) {
+    if (Math.abs(rawDeg - t) <= snapAngleThresholdDeg) {
+      const rad = (t * Math.PI) / 180;
+      return {
+        point: {
+          x: Math.round(start.x + r * Math.cos(rad)),
+          y: Math.round(start.y + r * Math.sin(rad)),
+        },
+        snappedAngleDeg: (t + 360) % 360,
+      };
+    }
+  }
+  return { point: end, snappedAngleDeg: null };
+}
+
+export function snapSmartCircleRadius(
+  rawRadiusPx: number,
+  pxPerCm = 40
+): { radiusPx: number; radiusCm: number; isSnapped: boolean } {
+  const rawCm = rawRadiusPx / pxPerCm;
+  // Snap to nearest 0.5 cm if within 0.14 cm
+  const nearestHalfCm = Math.round(rawCm * 2) / 2;
+  if (nearestHalfCm >= 0.5 && Math.abs(rawCm - nearestHalfCm) <= 0.14) {
+    return {
+      radiusPx: Math.round(nearestHalfCm * pxPerCm),
+      radiusCm: nearestHalfCm,
+      isSnapped: true,
+    };
+  }
+  return {
+    radiusPx: Math.round(rawRadiusPx),
+    radiusCm: Number(rawCm.toFixed(2)),
+    isSnapped: false,
+  };
+}
+
+/**
+ * Smart Pen Stroke Recognizer:
+ * Analyzes a freehand stroke drawn by a teacher/student on a Touch TV or tablet
+ * and classifies it into a clean geometric primitive (Segment, Circle, Triangle,
+ * Rectangle/Square, or Angle) or leaves it as Freehand if it's handwriting.
+ */
+export function recognizeSmartStroke(points: Point2D[]): RecognizedShapeResult {
+  if (points.length < 4) {
+    return { kind: 'freehand', labelFa: 'دست‌خط آزاد' };
+  }
+
+  // Compute total path length and bounding box
+  let pathLength = 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+    if (i > 0) {
+      pathLength += distance(points[i - 1], p);
+    }
+  }
+
+  const width = maxX - minX;
+  const height = maxY - minY;
+  const diag = Math.hypot(width, height);
+  if (pathLength < 28 || diag < 20) {
+    return { kind: 'freehand', labelFa: 'دست‌خط آزاد' };
+  }
+
+  const start = points[0];
+  const end = points[points.length - 1];
+  const chordDist = distance(start, end);
+
+  // 1. Check Straight Line Segment
+  if (chordDist / pathLength > 0.89) {
+    let maxDev = 0;
+    for (const p of points) {
+      const dev = perpendicularDistanceToSegment(p, start, end);
+      if (dev > maxDev) maxDev = dev;
+    }
+    if (maxDev < Math.max(16, chordDist * 0.08)) {
+      const snapped = snapSmartLineEndpoint(start, end, 6);
+      return {
+        kind: 'segment',
+        start: { x: Math.round(start.x), y: Math.round(start.y) },
+        end: snapped.point,
+        labelFa: 'پاره‌خط صاف هوشمند',
+      };
+    }
+  }
+
+  const isClosed = chordDist < Math.max(48, pathLength * 0.28, diag * 0.42);
+
+  // 2. If Closed Loop: Test Circle vs Triangle vs Rectangle/Square
+  if (isClosed && width > 24 && height > 24) {
+    // Simplify closed contour using RDP
+    const closedPts = [...points, points[0]];
+    const simplified = rdpSimplify(closedPts, diag * 0.085);
+    // Remove closing duplicate vertex
+    const corners = simplified.slice(0, -1);
+
+    // Compute radial circularity metrics around bounding-box / mean center
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const center = { x: Math.round(cx), y: Math.round(cy) };
+    const radii = points.map((p) => distance(p, center));
+    const meanR = radii.reduce((a, b) => a + b, 0) / radii.length;
+    const variance =
+      radii.reduce((acc, r) => acc + (r - meanR) * (r - meanR), 0) / radii.length;
+    const relStdDev = Math.sqrt(variance) / (meanR || 1);
+    const aspect = Math.min(width, height) / Math.max(width, height);
+
+    // Triangle check: 3 sharp corners
+    if (corners.length === 3 && relStdDev > 0.11) {
+      const v0 = { x: Math.round(corners[0].x), y: Math.round(corners[0].y) };
+      const v1 = { x: Math.round(corners[1].x), y: Math.round(corners[1].y) };
+      const v2 = { x: Math.round(corners[2].x), y: Math.round(corners[2].y) };
+      return {
+        kind: 'triangle',
+        vertices: [v0, v1, v2],
+        labelFa: 'مثلث هوشمند',
+      };
+    }
+
+    // Circle check: low radial deviation and reasonable aspect ratio
+    if (relStdDev < 0.19 && aspect > 0.68 && corners.length >= 4) {
+      const snappedR = snapSmartCircleRadius(meanR);
+      return {
+        kind: 'circle',
+        center,
+        radius: snappedR.radiusPx,
+        labelFa: `دایره هوشمند (r=${snappedR.radiusCm}cm)`,
+      };
+    }
+
+    // Rectangle / Square check: 4 corners (or 4-5 corners with box-like bounds)
+    if (corners.length === 4 || (corners.length === 5 && relStdDev >= 0.14)) {
+      const isSquare = aspect > 0.85;
+      const sideW = isSquare ? Math.round((width + height) / 2) : Math.round(width);
+      const sideH = isSquare ? sideW : Math.round(height);
+      const x1 = Math.round(cx - sideW / 2);
+      const y1 = Math.round(cy - sideH / 2);
+      const x2 = x1 + sideW;
+      const y2 = y1 + sideH;
+      return {
+        kind: 'rectangle',
+        vertices: [
+          { x: x1, y: y1 },
+          { x: x2, y: y1 },
+          { x: x2, y: y2 },
+          { x: x1, y: y2 },
+        ],
+        isSquare,
+        labelFa: isSquare ? 'مربع هوشمند' : 'مستطیل هوشمند',
+      };
+    }
+
+    // Secondary fallback for rougher hand-drawn circles on a big Touch TV
+    if (relStdDev < 0.24 && aspect > 0.62) {
+      const snappedR = snapSmartCircleRadius(meanR);
+      return {
+        kind: 'circle',
+        center,
+        radius: snappedR.radiusPx,
+        labelFa: `دایره هوشمند (r=${snappedR.radiusCm}cm)`,
+      };
+    }
+  }
+
+  // 3. Open Stroke with 1 Sharp Corner -> Angle (two rays BA and BC)
+  const openSimplified = rdpSimplify(points, diag * 0.09);
+  if (!isClosed && openSimplified.length === 3) {
+    const [pA, pB, pC] = openSimplified;
+    const arm1 = distance(pA, pB);
+    const arm2 = distance(pB, pC);
+    const deg = angleDeg(pA, pB, pC);
+    if (arm1 > 30 && arm2 > 30 && deg >= 15 && deg <= 165) {
+      return {
+        kind: 'angle',
+        vertices: [
+          { x: Math.round(pA.x), y: Math.round(pA.y) },
+          { x: Math.round(pB.x), y: Math.round(pB.y) },
+          { x: Math.round(pC.x), y: Math.round(pC.y) },
+        ],
+        deg: Math.round(deg),
+        labelFa: `زاویه هوشمند (${Math.round(deg)}°)`,
+      };
+    }
+  }
+
+  return { kind: 'freehand', labelFa: 'دست‌خط آزاد' };
+}
+

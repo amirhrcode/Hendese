@@ -9,6 +9,7 @@ import {
   computeThalesTheorem,
   computeRightTriangleMetrics,
   classifyConicSection,
+  recognizeSmartStroke,
 } from './geometryMath';
 
 test('distance and midpoint calculations are accurate', () => {
@@ -75,3 +76,25 @@ test('classifyConicSection identifies circle, ellipse, parabola, hyperbola (text
   assert.equal(classifyConicSection(60, 60).typeEn, 'parabola');
   assert.equal(classifyConicSection(80, 60).typeEn, 'hyperbola');
 });
+
+test('recognizeSmartStroke detects hand-drawn circles, segments, and triangles', () => {
+  // 1. Hand-drawn circle around (300, 250) with radius ~80
+  const circlePts = Array.from({ length: 36 }, (_, i) => {
+    const a = (i / 35) * Math.PI * 2;
+    return {
+      x: 300 + Math.cos(a) * 80 + (i % 2 === 0 ? 2 : -2),
+      y: 250 + Math.sin(a) * 80,
+    };
+  });
+  const circleRes = recognizeSmartStroke(circlePts);
+  assert.equal(circleRes.kind, 'circle');
+
+  // 2. Hand-drawn near-horizontal segment
+  const segPts = Array.from({ length: 12 }, (_, i) => ({
+    x: 100 + i * 20,
+    y: 200 + (i % 2),
+  }));
+  const segRes = recognizeSmartStroke(segPts);
+  assert.equal(segRes.kind, 'segment');
+});
+

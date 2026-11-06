@@ -8,7 +8,7 @@ export function downloadStandaloneIndexHtml(): void {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
-  <title>هندسه‌نگار (نسخه مستقل قابل حمل — تخته سفید و کتابخوان PDF)</title>
+  <title>ترسیم هندسه — طراح و توسعه‌دهنده: امیرحسین رضایی</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     body {
@@ -80,7 +80,7 @@ export function downloadStandaloneIndexHtml(): void {
       display: flex;
       align-items: center;
       gap: 6px;
-      overflow-x: auto;
+      flex-wrap: wrap;
       flex-shrink: 0;
     }
     .canvas-wrap {
@@ -116,8 +116,8 @@ export function downloadStandaloneIndexHtml(): void {
 <body>
   <header>
     <div class="brand">
-      <div class="brand-badge">هـ</div>
-      <span>هندسه‌نگار — تخته سفید و ابزار ترسیم آفلاین</span>
+      <div class="brand-badge">ت</div>
+      <span>ترسیم هندسه — طراح و توسعه‌دهنده: امیرحسین رضایی</span>
       <button class="btn" id="toggleSidebarBtn">☰ پنل ابزار</button>
     </div>
     <div class="tabs">

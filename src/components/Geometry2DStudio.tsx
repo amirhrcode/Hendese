@@ -34,7 +34,8 @@ import {
   FilePlus2,
   Type,
   Check,
-  ImageDown
+  ImageDown,
+  Wand2
 } from 'lucide-react';
 import {
   Point2D,
@@ -49,11 +50,15 @@ import {
   computePicksTheorem,
   computeThalesTheorem,
   computeRightTriangleMetrics,
+  recognizeSmartStroke,
+  snapSmartLineEndpoint,
+  snapSmartCircleRadius,
 } from '../utils/geometryMath';
 import { GEOMETRY_PRESETS, GeometryPreset } from '../data/textbookData';
 
 export type Tool2D =
   | 'select'
+  | 'smart-pen'
   | 'pen'
   | 'highlighter'
   | 'eraser'
@@ -136,6 +141,8 @@ interface BoardSnapshot {
 interface Geometry2DStudioProps {
   initialPresetId?: string;
   onJumpToTextbookPage?: (bookPage: number) => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 const LETTERS = [
@@ -146,22 +153,24 @@ const LETTERS = [
 export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   initialPresetId = 'preset-perp-bisector',
   onJumpToTextbookPage,
+  isFullscreen = false,
+  onToggleFullscreen,
 }) => {
   const initialPreset =
     GEOMETRY_PRESETS.find((p) => p.id === initialPresetId) || GEOMETRY_PRESETS[0];
 
   const [activePreset, setActivePreset] = useState<GeometryPreset | null>(initialPreset);
-  const [activeTool, setActiveTool] = useState<Tool2D>('segment');
+  const [activeTool, setActiveTool] = useState<Tool2D>('smart-pen');
   const [activeColor, setActiveColor] = useState<string>('#0284C7');
   const [strokeWidth, setStrokeWidth] = useState<number>(3);
   const [polySides, setPolySides] = useState<number>(5);
   const [boardBg, setBoardBg] = useState<BoardBackground>('grid');
   const [snapToGrid, setSnapToGrid] = useState<boolean>(false);
   const [showMeasurements, setShowMeasurements] = useState<boolean>(true);
+  const [smartRecognitionToast, setSmartRecognitionToast] = useState<string | null>(null);
 
-  // Collapsible Sidebar & Fullscreen state
+  // Collapsible Sidebar state
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
   // Core Canvas State
   const [points, setPoints] = useState<CanvasPoint[]>(initialPreset.points);
@@ -191,6 +200,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     startPt: Point2D;
     currentPt: Point2D;
     startPointId?: string;
+    snappedAngle?: number | null;
+    snappedRadiusCm?: number | null;
   } | null>(null);
   const [activeFreehand, setActiveFreehand] = useState<FreehandStroke | null>(null);
 
@@ -230,6 +241,17 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const showSmartToast = useCallback((msg: string) => {
+    setSmartRecognitionToast(msg);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setSmartRecognitionToast(null);
+    }, 3200);
+  }, []);
 
   // Save snapshot for Undo before modifying board
   const pushHistory = useCallback(() => {
@@ -290,7 +312,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
   const getPointById = (id: string) => points.find((p) => p.id === id);
 
-  // Switch to a completely blank whiteboard ready for writing & drawing
+  // Switch to a completely blank whiteboard ready for writing & smart drawing
   const openBlankWhiteboard = () => {
     pushHistory();
     setActivePreset(null);
@@ -303,7 +325,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     setSelectedItem(null);
     setSelectedPointIds([]);
     setBoardBg('white');
-    setActiveTool('pen');
+    setActiveTool('smart-pen');
+    showSmartToast('✨ تخته سفید خالی آماده است — با قلم هوشمند هر شکلی بکشید تا خودکار منظم شود');
   };
 
   const loadPreset = (preset: GeometryPreset) => {
@@ -322,28 +345,18 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     setActiveTool('select');
   };
 
-  // Toggle Fullscreen
+  // Toggle Fullscreen (delegates to App.tsx root Fullscreen so switching tabs never exits Fullscreen)
   const toggleFullscreen = () => {
-    if (!isFullscreen) {
-      setIsFullscreen(true);
-      if (containerRef.current && containerRef.current.requestFullscreen) {
-        containerRef.current.requestFullscreen().catch(() => {});
-      }
-    } else {
-      setIsFullscreen(false);
-      if (document.fullscreenElement && document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {});
-      }
+    if (onToggleFullscreen) {
+      onToggleFullscreen();
+      return;
+    }
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
     }
   };
-
-  useEffect(() => {
-    const onFsChange = () => {
-      if (!document.fullscreenElement) setIsFullscreen(false);
-    };
-    document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
-  }, []);
 
   // Copy / Duplicate Selected Shape or Construction
   const handleDuplicateSelected = useCallback(() => {
@@ -667,12 +680,12 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       return;
     }
 
-    // 2. PEN & HIGHLIGHTER (Blank Whiteboard Freehand Writing)
-    if (activeTool === 'pen' || activeTool === 'highlighter') {
+    // 2. SMART PEN, PEN & HIGHLIGHTER (Blank Whiteboard Freehand + Smart Shape Recognition)
+    if (activeTool === 'smart-pen' || activeTool === 'pen' || activeTool === 'highlighter') {
       pushHistory();
       setActiveFreehand({
         id: `stroke-${Date.now()}`,
-        type: activeTool,
+        type: activeTool === 'highlighter' ? 'highlighter' : 'pen',
         points: [coords],
         color: activeColor,
         width: activeTool === 'highlighter' ? 16 : strokeWidth,
@@ -724,6 +737,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         startPt: nearPt ? { x: nearPt.x, y: nearPt.y } : coords,
         currentPt: nearPt ? { x: nearPt.x, y: nearPt.y } : coords,
         startPointId: nearPt?.id,
+        snappedAngle: null,
+        snappedRadiusCm: null,
       });
       return;
     }
@@ -927,29 +942,233 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
     if (dragDrawStart) {
       const nearPt = findNearestPoint(coords, 16);
-      setDragDrawStart((prev) =>
-        prev
-          ? {
-              ...prev,
-              currentPt: nearPt ? { x: nearPt.x, y: nearPt.y } : coords,
-            }
-          : null
-      );
+      if (nearPt) {
+        setDragDrawStart((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentPt: { x: nearPt.x, y: nearPt.y },
+                snappedAngle: null,
+                snappedRadiusCm: null,
+              }
+            : null
+        );
+        return;
+      }
+
+      if (activeTool === 'compass') {
+        const rawR = distance(dragDrawStart.startPt, coords);
+        const snapR = snapSmartCircleRadius(rawR, 40);
+        const ang = Math.atan2(
+          coords.y - dragDrawStart.startPt.y,
+          coords.x - dragDrawStart.startPt.x
+        );
+        const nextPt = {
+          x: Math.round(dragDrawStart.startPt.x + snapR.radiusPx * Math.cos(ang)),
+          y: Math.round(dragDrawStart.startPt.y + snapR.radiusPx * Math.sin(ang)),
+        };
+        setDragDrawStart((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentPt: nextPt,
+                snappedRadiusCm: snapR.isSnapped ? snapR.radiusCm : null,
+              }
+            : null
+        );
+      } else if (
+        activeTool === 'segment' ||
+        activeTool === 'line' ||
+        activeTool === 'ray'
+      ) {
+        const snapLine = snapSmartLineEndpoint(dragDrawStart.startPt, coords, 6);
+        setDragDrawStart((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentPt: snapLine.point,
+                snappedAngle: snapLine.snappedAngleDeg,
+              }
+            : null
+        );
+      } else {
+        setDragDrawStart((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentPt: coords,
+              }
+            : null
+        );
+      }
     }
   };
 
-  // Pointer Up: Finalize Fast Drag-to-Draw Shapes
-  const handlePointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+  // Pointer Up: Finalize Fast Drag-to-Draw Shapes & Smart Pen Recognition
+  const handlePointerUp = () => {
     setDraggingPointId(null);
     setDraggingInstrument(null);
     setDraggingWholeItem(null);
 
     if (activeFreehand) {
-      if (activeFreehand.points.length > 1) {
-        setStrokes((prev) => [...prev, activeFreehand]);
-        setSelectedItem({ kind: 'stroke', id: activeFreehand.id });
-      }
+      const drawnPts = activeFreehand.points;
+      const strokeToFinish = activeFreehand;
       setActiveFreehand(null);
+
+      // Helper to ensure point exists in points array
+      let updatedPts = [...points];
+      const ensurePt = (pt: Point2D): CanvasPoint => {
+        const near = updatedPts.find((p) => distance(p, pt) <= 16);
+        if (near) return near;
+        const lbl = getNextLabel(updatedPts);
+        const created: CanvasPoint = {
+          id: lbl,
+          label: lbl,
+          x: Math.max(12, Math.min(748, Math.round(pt.x))),
+          y: Math.max(12, Math.min(488, Math.round(pt.y))),
+          color: activeColor,
+        };
+        updatedPts.push(created);
+        return created;
+      };
+
+      if (activeTool === 'smart-pen' && drawnPts.length >= 6) {
+        const recognized = recognizeSmartStroke(drawnPts);
+
+        if (recognized.kind === 'circle') {
+          const snapR = snapSmartCircleRadius(recognized.radius, 40);
+          const finalR = snapR.radiusPx;
+          const centerPt = ensurePt(recognized.center);
+          const radiusPt = ensurePt({
+            x: recognized.center.x + finalR,
+            y: recognized.center.y,
+          });
+          const newCir: CanvasCircle = {
+            id: `smart-cir-${Date.now()}`,
+            center: centerPt.id,
+            radiusPoint: radiusPt.id,
+            style: 'solid',
+            color: activeColor,
+          };
+          setPoints(updatedPts);
+          setCircles((prev) => [...prev, newCir]);
+          setSelectedItem({ kind: 'circle', id: newCir.id });
+          showSmartToast(
+            `✨ تشخیص قلم هوشمند: دایره با مرکز ${centerPt.label} و شعاع ${(finalR / 40).toFixed(1)} cm`
+          );
+          return;
+        }
+
+        if (recognized.kind === 'segment') {
+          const snappedEnd = snapSmartLineEndpoint(recognized.start, recognized.end, 7);
+          const p1 = ensurePt(recognized.start);
+          const p2 = ensurePt(snappedEnd.point);
+          const newSeg: CanvasSegment = {
+            id: `smart-seg-${Date.now()}`,
+            p1: p1.id,
+            p2: p2.id,
+            kind: 'segment',
+            style: 'solid',
+            color: activeColor,
+          };
+          setPoints(updatedPts);
+          setSegments((prev) => [...prev, newSeg]);
+          setSelectedItem({ kind: 'segment', id: newSeg.id });
+          showSmartToast(
+            `✨ تشخیص قلم هوشمند: پاره‌خط صاف ${p1.label}${p2.label} (${(
+              distance(p1, p2) / 40
+            ).toFixed(1)} cm)`
+          );
+          return;
+        }
+
+        if (recognized.kind === 'triangle') {
+          const [v1, v2, v3] = recognized.vertices;
+          const pA = ensurePt(v1);
+          const pB = ensurePt(v2);
+          const pC = ensurePt(v3);
+          const verts = [pA.id, pB.id, pC.id];
+          const newSegs: CanvasSegment[] = verts.map((v, i) => ({
+            id: `smart-tri-seg-${Date.now()}-${i}`,
+            p1: v,
+            p2: verts[(i + 1) % 3],
+            style: 'solid',
+            color: activeColor,
+          }));
+          const newPoly: CanvasPolygon = {
+            id: `smart-tri-${Date.now()}`,
+            vertices: verts,
+            fill: 'rgba(2, 132, 199, 0.09)',
+            color: activeColor,
+          };
+          setPoints(updatedPts);
+          setSegments((prev) => [...prev, ...newSegs]);
+          setPolygons((prev) => [...prev, newPoly]);
+          setSelectedItem({ kind: 'polygon', id: newPoly.id });
+          showSmartToast(`✨ تشخیص قلم هوشمند: مثلث ${pA.label}${pB.label}${pC.label}`);
+          return;
+        }
+
+        if (recognized.kind === 'rectangle') {
+          const [v1, v2, v3, v4] = recognized.vertices;
+          const pA = ensurePt(v1);
+          const pB = ensurePt(v2);
+          const pC = ensurePt(v3);
+          const pD = ensurePt(v4);
+          const verts = [pA.id, pB.id, pC.id, pD.id];
+          const newSegs: CanvasSegment[] = verts.map((v, i) => ({
+            id: `smart-rect-seg-${Date.now()}-${i}`,
+            p1: v,
+            p2: verts[(i + 1) % 4],
+            style: 'solid',
+            color: activeColor,
+          }));
+          const newPoly: CanvasPolygon = {
+            id: `smart-rect-${Date.now()}`,
+            vertices: verts,
+            fill: 'rgba(2, 132, 199, 0.09)',
+            color: activeColor,
+          };
+          setPoints(updatedPts);
+          setSegments((prev) => [...prev, ...newSegs]);
+          setPolygons((prev) => [...prev, newPoly]);
+          setSelectedItem({ kind: 'polygon', id: newPoly.id });
+          showSmartToast(
+            `✨ تشخیص قلم هوشمند: چهارضلعی منظم ${pA.label}${pB.label}${pC.label}${pD.label}`
+          );
+          return;
+        }
+
+        if (recognized.kind === 'angle') {
+          const [ptStart, ptVertex, ptEnd] = recognized.vertices;
+          const p1 = ensurePt(ptStart);
+          const p2 = ensurePt(ptVertex);
+          const p3 = ensurePt(ptEnd);
+          const rayEnd = angleBisectorRay(p1, p2, p3, 180);
+          const kPt = ensurePt(rayEnd);
+          setPoints(updatedPts);
+          setSegments((prev) => [
+            ...prev,
+            { id: `smart-ang1-${Date.now()}`, p1: p2.id, p2: p1.id, style: 'solid', color: activeColor },
+            { id: `smart-ang2-${Date.now()}`, p1: p2.id, p2: p3.id, style: 'solid', color: activeColor },
+            {
+              id: `smart-bis-${Date.now()}`,
+              p1: p2.id,
+              p2: kPt.id,
+              kind: 'ray',
+              style: 'accent',
+              label: 'نیمساز',
+            },
+          ]);
+          showSmartToast(`✨ تشخیص قلم هوشمند: زاویه ${p1.label}${p2.label}${p3.label} و نیمساز آن`);
+          return;
+        }
+      }
+
+      if (drawnPts.length > 1) {
+        setStrokes((prev) => [...prev, strokeToFinish]);
+        setSelectedItem({ kind: 'stroke', id: strokeToFinish.id });
+      }
       return;
     }
 
@@ -1210,14 +1429,16 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
   const toolHelperText: Record<Tool2D, string> = {
     select: 'روی هر نقطه، خط، دایره یا دست‌خط کلیک کنید تا انتخاب، جابه‌جا یا کپی شود.',
+    'smart-pen':
+      'قلم هوشمند فعال است ✨ — دایره، خط صاف، مثلث، مستطیل یا زاویه را با دست بکشید تا خودکار به شکل هندسی دقیق تبدیل شود!',
     pen: 'قلم آزاد تخته سفید فعال است — با ماوس یا لمس انگشت روی تخته بنویسید.',
     highlighter: 'ماژیک هایلایت فعال است — روی زوایا یا فرمول‌ها بکشید.',
     eraser: 'پاک‌کن فعال است — روی هر خط، شکل یا نقطه بکشید تا پاک شود.',
     point: 'روی هر جای تخته کلیک کنید تا یک نقطه نام‌گذاری‌شده ایجاد شود.',
-    segment: 'روی تخته بکشید (Drag) تا پاره‌خط با اندازه دقیق رسم شود.',
+    segment: 'روی تخته بکشید (Drag) تا پاره‌خط با اندازه دقیق و جذب زاویه‌ای هوشمند رسم شود.',
     line: 'روی تخته بکشید تا خط راست دوطرفه بی‌نهایت رسم شود.',
     ray: 'از نقطه مبدأ بکشید تا نیم‌خط رسم شود.',
-    compass: 'از مرکز دایره به سمت بیرون بکشید تا با پرگار دایره رسم شود.',
+    compass: 'از مرکز دایره به بیرون بکشید — پرگار هوشمند شعاع، قطر، محیط و مساحت زنده را نمایش می‌دهد.',
     rect: 'روی تخته بکشید تا مستطیل یا مربع چهارضلعی رسم شود.',
     triangle: 'روی تخته بکشید تا مثلث سه رأسی قابل تغییر شکل رسم شود.',
     'regular-poly': `از مرکز به بیرون بکشید تا ${polySides}ضلعی منتظم رسم شود.`,
@@ -1232,17 +1453,17 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`flex flex-col lg:flex-row gap-3 p-3 max-w-[1680px] mx-auto overflow-y-auto ${
-        isFullscreen
-          ? 'fixed inset-0 z-50 bg-[#F8FAFC] max-w-none h-screen'
-          : 'min-h-[calc(100vh-4rem)]'
-      }`}
+      className="flex flex-col lg:flex-row gap-3 p-2.5 max-w-[1680px] mx-auto overflow-y-auto h-[calc(100vh-3.5rem)]"
     >
       {/* Main Interactive Whiteboard & Drafting Canvas Column */}
       <div className="flex-1 flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs min-w-0">
-        {/* Top Row 1: Fast Drawing & Geometric Construction Tools */}
-        <div className="p-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-1.5 overflow-x-auto">
-          <div className="flex items-center gap-1 flex-nowrap" role="toolbar" aria-label="ابزارهای تخته سفید و ترسیم هندسی">
+        {/* Top Row 1: Fast Drawing & Geometric Construction Tools (Flex-Wrap, Zero Horizontal Scrollbar) */}
+        <div className="p-2 bg-slate-50 border-b border-slate-200">
+          <div
+            className="flex items-center gap-1 flex-wrap"
+            role="toolbar"
+            aria-label="ابزارهای تخته سفید و ترسیم هندسی"
+          >
             {/* Blank Whiteboard Quick Reset Button */}
             <button
               onClick={openBlankWhiteboard}
@@ -1258,13 +1479,14 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             {(
               [
                 { id: 'select', label: 'انتخاب و حرکت', icon: MousePointer },
-                { id: 'pen', label: 'قلم تخته', icon: PenTool },
+                { id: 'smart-pen', label: 'قلم هوشمند ✨', icon: Wand2 },
+                { id: 'pen', label: 'قلم آزاد', icon: PenTool },
                 { id: 'highlighter', label: 'ماژیک', icon: Highlighter },
                 { id: 'eraser', label: 'پاک‌کن', icon: Eraser },
+                { id: 'compass', label: 'دایره هوشمند', icon: Compass },
                 { id: 'segment', label: 'پاره‌خط', icon: Minus },
                 { id: 'line', label: 'خط دوطرفه', icon: MoveHorizontal },
                 { id: 'ray', label: 'نیم‌خط', icon: MoveUpRight },
-                { id: 'compass', label: 'دایره / پرگار', icon: Compass },
                 { id: 'rect', label: 'مستطیل', icon: Square },
                 { id: 'triangle', label: 'مثلث', icon: Triangle },
                 { id: 'regular-poly', label: 'چندضلعی منتظم', icon: Pentagon },
@@ -1278,6 +1500,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             ).map((tool) => {
               const Icon = tool.icon;
               const isActive = activeTool === tool.id;
+              const isSmartPen = tool.id === 'smart-pen';
               return (
                 <button
                   key={tool.id}
@@ -1288,6 +1511,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                   className={`px-2 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                     isActive
                       ? 'bg-sky-600 text-white shadow-2xs'
+                      : isSmartPen
+                      ? 'bg-sky-50 text-sky-800 border border-sky-300 hover:bg-sky-100'
                       : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
                   }`}
                 >
@@ -1460,7 +1685,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             <button
               onClick={toggleFullscreen}
               className="px-2.5 py-1 rounded-md border border-slate-200 hover:bg-slate-100 text-slate-800 font-semibold flex items-center gap-1 cursor-pointer"
-              title="حالت تمام‌صفحه"
+              title="حالت تمام‌صفحه پایدار در کل برنامه"
             >
               {isFullscreen ? (
                 <Minimize2 className="w-3.5 h-3.5 text-sky-600" />
@@ -1485,11 +1710,19 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
           </div>
         </div>
 
-        {/* Instruction Strip */}
+        {/* Instruction Strip + Smart Pen Recognition Badge */}
         <div className="px-4 py-1.5 bg-sky-50/70 border-b border-slate-200 flex items-center justify-between gap-4 text-xs text-slate-700">
           <div className="flex items-center gap-2 truncate">
-            <span className="font-semibold text-sky-800 shrink-0">راهنمای سریع:</span>
-            <span className="truncate">{toolHelperText[activeTool]}</span>
+            {smartRecognitionToast ? (
+              <span className="px-2.5 py-0.5 rounded-md bg-emerald-600 text-white font-bold text-xs animate-pulse">
+                {smartRecognitionToast}
+              </span>
+            ) : (
+              <>
+                <span className="font-semibold text-sky-800 shrink-0">راهنمای سریع:</span>
+                <span className="truncate">{toolHelperText[activeTool]}</span>
+              </>
+            )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <button
@@ -1621,20 +1854,21 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 strokeWidth={activeFreehand.width}
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                strokeDasharray={activeTool === 'smart-pen' ? '5 3' : undefined}
                 opacity={activeFreehand.type === 'highlighter' ? 0.34 : 0.95}
               />
             )}
 
             {/* Compass Circles & Construction Arcs */}
-            {circles.map((cir, idx) => {
+            {circles.map((cir) => {
               const cPt = getPointById(cir.center);
               const rPt = cir.radiusPoint ? getPointById(cir.radiusPoint) : null;
               if (!cPt) return null;
               const r = cir.fixedRadius ?? (rPt ? distance(cPt, rPt) : 60);
               const isCompass = cir.style === 'compass';
               const isSel = selectedItem?.kind === 'circle' && selectedItem.id === cir.id;
-              const labelX = idx % 2 === 0 ? cPt.x - r * 0.72 - 42 : cPt.x + r * 0.72;
-              const labelY = cPt.y - r * 0.72;
+              const labelX = cPt.x;
+              const labelY = Math.max(18, cPt.y - r - 8);
               return (
                 <g key={cir.id}>
                   <circle
@@ -1660,15 +1894,25 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                     />
                   )}
                   {showMeasurements && (
-                    <text
-                      x={labelX}
-                      y={labelY}
-                      fontSize="11"
-                      fill="#0369A1"
-                      className="font-mono-num"
-                    >
-                      r={(r / 40).toFixed(2)}cm
-                    </text>
+                    <g transform={`translate(${labelX}, ${labelY})`}>
+                      <rect
+                        x="-28"
+                        y="-11"
+                        width="56"
+                        height="15"
+                        rx="3"
+                        fill="rgba(255,255,255,0.9)"
+                      />
+                      <text
+                        textAnchor="middle"
+                        fontSize="10.5"
+                        fontWeight="600"
+                        fill="#0369A1"
+                        className="font-mono-num"
+                      >
+                        r={(r / 40).toFixed(2)}cm
+                      </text>
+                    </g>
                   )}
                 </g>
               );
@@ -1747,9 +1991,9 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               );
             })}
 
-            {/* Live Drag-to-Draw Preview Overlay */}
+            {/* Live Drag-to-Draw Preview Overlay (with Smart Circle & Smart Line HUD) */}
             {dragDrawStart && (
-              <g opacity="0.8">
+              <g opacity="0.92">
                 {(activeTool === 'segment' ||
                   activeTool === 'line' ||
                   activeTool === 'ray' ||
@@ -1761,43 +2005,109 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                       x2={dragDrawStart.currentPt.x}
                       y2={dragDrawStart.currentPt.y}
                       stroke={activeColor}
-                      strokeWidth="2.2"
+                      strokeWidth="2.4"
                       strokeDasharray="5 4"
                     />
-                    <text
-                      x={(dragDrawStart.startPt.x + dragDrawStart.currentPt.x) / 2}
-                      y={(dragDrawStart.startPt.y + dragDrawStart.currentPt.y) / 2 - 10}
-                      fontSize="11"
-                      fontWeight="bold"
-                      fill={activeColor}
-                      className="font-mono-num"
+                    <g
+                      transform={`translate(${
+                        (dragDrawStart.startPt.x + dragDrawStart.currentPt.x) / 2
+                      }, ${(dragDrawStart.startPt.y + dragDrawStart.currentPt.y) / 2 - 14})`}
                     >
-                      {(distance(dragDrawStart.startPt, dragDrawStart.currentPt) / 40).toFixed(2)} cm
-                    </text>
+                      <rect
+                        x="-62"
+                        y="-13"
+                        width="124"
+                        height="18"
+                        rx="4"
+                        fill="rgba(15, 23, 42, 0.88)"
+                      />
+                      <text
+                        textAnchor="middle"
+                        fontSize="10.5"
+                        fontWeight="bold"
+                        fill="#FFFFFF"
+                        className="font-mono-num"
+                      >
+                        {(distance(dragDrawStart.startPt, dragDrawStart.currentPt) / 40).toFixed(2)} cm
+                        {dragDrawStart.snappedAngle !== null &&
+                        dragDrawStart.snappedAngle !== undefined
+                          ? ` • ${Math.abs(dragDrawStart.snappedAngle)}°`
+                          : ''}
+                      </text>
+                    </g>
                   </>
                 )}
-                {activeTool === 'compass' && (
-                  <>
-                    <circle
-                      cx={dragDrawStart.startPt.x}
-                      cy={dragDrawStart.startPt.y}
-                      r={distance(dragDrawStart.startPt, dragDrawStart.currentPt)}
-                      fill="none"
-                      stroke={activeColor}
-                      strokeWidth="2"
-                      strokeDasharray="6 4"
-                    />
-                    <line
-                      x1={dragDrawStart.startPt.x}
-                      y1={dragDrawStart.startPt.y}
-                      x2={dragDrawStart.currentPt.x}
-                      y2={dragDrawStart.currentPt.y}
-                      stroke={activeColor}
-                      strokeWidth="1.5"
-                      strokeDasharray="4 4"
-                    />
-                  </>
-                )}
+                {activeTool === 'compass' && (() => {
+                  const rPx = distance(dragDrawStart.startPt, dragDrawStart.currentPt);
+                  const rCm = rPx / 40;
+                  const dCm = rCm * 2;
+                  const perimCm = 2 * Math.PI * rCm;
+                  const areaCm2 = Math.PI * rCm * rCm;
+                  return (
+                    <>
+                      <circle
+                        cx={dragDrawStart.startPt.x}
+                        cy={dragDrawStart.startPt.y}
+                        r={rPx}
+                        fill="rgba(2, 132, 199, 0.06)"
+                        stroke={activeColor}
+                        strokeWidth="2.4"
+                        strokeDasharray="6 4"
+                      />
+                      {/* Crosshair at center */}
+                      <line
+                        x1={dragDrawStart.startPt.x - 8}
+                        y1={dragDrawStart.startPt.y}
+                        x2={dragDrawStart.startPt.x + 8}
+                        y2={dragDrawStart.startPt.y}
+                        stroke={activeColor}
+                        strokeWidth="1.5"
+                      />
+                      <line
+                        x1={dragDrawStart.startPt.x}
+                        y1={dragDrawStart.startPt.y - 8}
+                        x2={dragDrawStart.startPt.x}
+                        y2={dragDrawStart.startPt.y + 8}
+                        stroke={activeColor}
+                        strokeWidth="1.5"
+                      />
+                      <line
+                        x1={dragDrawStart.startPt.x}
+                        y1={dragDrawStart.startPt.y}
+                        x2={dragDrawStart.currentPt.x}
+                        y2={dragDrawStart.currentPt.y}
+                        stroke={activeColor}
+                        strokeWidth="1.8"
+                        strokeDasharray="4 4"
+                      />
+                      {/* Smart Circle Live HUD */}
+                      <g
+                        transform={`translate(${dragDrawStart.startPt.x}, ${Math.max(
+                          28,
+                          dragDrawStart.startPt.y - rPx - 14
+                        )})`}
+                      >
+                        <rect
+                          x="-135"
+                          y="-16"
+                          width="270"
+                          height="22"
+                          rx="6"
+                          fill="rgba(15, 23, 42, 0.9)"
+                        />
+                        <text
+                          textAnchor="middle"
+                          fontSize="10.5"
+                          fontWeight="700"
+                          fill="#38BDF8"
+                          className="font-mono-num"
+                        >
+                          {`r=${rCm.toFixed(1)}cm | 2r=${dCm.toFixed(1)} | P=${perimCm.toFixed(1)} | S=${areaCm2.toFixed(1)}cm²`}
+                        </text>
+                      </g>
+                    </>
+                  );
+                })()}
                 {activeTool === 'rect' && (
                   <rect
                     x={Math.min(dragDrawStart.startPt.x, dragDrawStart.currentPt.x)}

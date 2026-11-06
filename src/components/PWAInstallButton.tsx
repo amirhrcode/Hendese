@@ -92,26 +92,26 @@ export const PWAInstallButton: React.FC<{ onQuickExportProject?: () => void }> =
       {isInstalled ? (
         <button
           onClick={() => setShowModal(true)}
-          className="px-3 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
+          className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
         >
           <Check className="w-3.5 h-3.5" />
-          <span>نسخه آفلاین و قابل حمل</span>
+          <span>نسخه آفلاین</span>
         </button>
       ) : isInstallable ? (
         <button
           onClick={install}
-          className="px-3 py-2 text-xs font-semibold text-white bg-sky-600 rounded-lg hover:bg-sky-700 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
+          className="px-3 py-1.5 text-xs font-semibold text-white bg-sky-600 rounded-lg hover:bg-sky-700 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
         >
           <Download className="w-3.5 h-3.5" />
-          <span>نصب وب‌اپ آفلاین</span>
+          <span>نصب وب‌اپ</span>
         </button>
       ) : (
         <button
           onClick={() => setShowModal(true)}
-          className="px-3 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
+          className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer"
         >
           <Download className="w-3.5 h-3.5" />
-          <span>نصب و نسخه تک‌فایلی</span>
+          <span>نصب و فایل مستقل</span>
         </button>
       )}
 
@@ -125,13 +125,18 @@ export const PWAInstallButton: React.FC<{ onQuickExportProject?: () => void }> =
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h3 className="text-base font-bold text-slate-900">
-                اجرای آفلاین، اندروید و نسخه قابل حمل (index.html)
-              </h3>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  اپلیکیشن ترسیم هندسه — اجرای آفلاین و نسخه مستقل
+                </h3>
+                <p className="text-xs font-semibold text-sky-700 mt-0.5">
+                  طراح و توسعه‌دهنده: امیرحسین رضایی
+                </p>
+              </div>
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              موتور <strong>PDF.js</strong> (شامل فایل‌های <code>pdf.min.mjs</code>، <code>pdf.worker.min.mjs</code>، دیکدرهای تصویر <code>wasm</code> و فونت‌های استاندارد) به طور کامل در پوشه <code>/public/pdfjs/</code> داخل همین پروژه قرار داده شده و بدون نیاز به اینترنت کار می‌کند.
+              موتور <strong>PDF.js</strong> (شامل فایل‌های <code>pdf.min.mjs</code>، <code>pdf.worker.min.mjs</code>، دیکدرهای تصویر <code>wasm</code> و فونت‌های استاندارد) به طور کامل در پوشه <code>/public/pdfjs/</code> داخل همین پروژه قرار داده شده و بدون نیاز به اینترنت روی دسکتاپ، گوشی و تلویزیون‌های لمسی اندروید (Touch TV) کار می‌کند.
             </p>
 
             {/* Option 1: Direct Standalone index.html download */}
