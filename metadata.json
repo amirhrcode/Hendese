@@ -1,0 +1,6 @@
+{
+  "name": "هندسه‌نگار (HendeseNegar) — آزمایشگاه تعاملی هندسه ۱ و کتابخوان هوشمند PDF",
+  "description": "وب‌اپلیکیشن آفلاین، قابل حمل و لوکال آموزش و ترسیمات هندسی (همراه با کتاب هندسه ۱ پایه دهم، کارگاه ترسیمات ۲بعدی خط‌کش و پرگار، آزمایشگاه تجسم فضایی ۳بعدی Three.js و دستیار هوشمند استدلال هندسی)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
