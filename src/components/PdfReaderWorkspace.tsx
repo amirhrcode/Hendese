@@ -35,6 +35,7 @@ import {
   ImageDown,
   Bookmark,
   Grid,
+  Search,
 } from 'lucide-react';
 import {
   TEXTBOOK_LESSONS,
@@ -150,8 +151,17 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   const [activePdfTitle, setActivePdfTitle] = useState<string>('کتاب درسی هندسه ۱ (پایه دهم)');
   const [isDefaultTextbook, setIsDefaultTextbook] = useState<boolean>(true);
 
+  // Universal Multi-Subject Reading Filter ('day' | 'sepia' | 'night') & Full-Text Search
+  const [readingFilter, setReadingFilter] = useState<'day' | 'sepia' | 'night'>('day');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isSearchingPdf, setIsSearchingPdf] = useState<boolean>(false);
+  const [searchResults, setSearchResults] = useState<{ page: number; snippet: string }[]>([]);
+  const [rightDockCollapsed, setRightDockCollapsed] = useState<boolean>(false);
+
   // Sidebar collapse state & Page Grid Modal
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  );
   const [showPageGridModal, setShowPageGridModal] = useState<boolean>(false);
   const [bookmarkedPages, setBookmarkedPages] = useState<number[]>(() => {
     try {
@@ -171,6 +181,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   const [overlayEnabled, setOverlayEnabled] = useState<boolean>(true);
   const [activeTool, setActiveTool] = useState<OverlayTool>('smart-pen');
   const [strokeColor, setStrokeColor] = useState<string>('#0284C7');
+  const [strokeWidth, setStrokeWidth] = useState<number>(3);
   const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
   const [pageAnnotations, setPageAnnotations] = useState<Record<number, OverlayStroke[]>>(() => {
     try {
@@ -208,6 +219,48 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     setPdfToast(msg);
     window.setTimeout(() => setPdfToast(null), 3200);
   }, []);
+
+  // Universal In-PDF Text Search across pages (works for any subject textbook/PDF)
+  const handleSearchInPdf = useCallback(async () => {
+    const q = searchQuery.trim();
+    if (!pdfDoc || !q) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearchingPdf(true);
+    try {
+      const matches: { page: number; snippet: string }[] = [];
+      const maxScan = Math.min(pdfDoc.numPages, 150);
+      for (let p = 1; p <= maxScan; p++) {
+        const page = await pdfDoc.getPage(p);
+        const textContent = await page.getTextContent();
+        const fullText = (textContent.items as any[])
+          .map((it) => it.str || '')
+          .join(' ')
+          .replace(/\s+/g, ' ');
+        const idx = fullText.toLowerCase().indexOf(q.toLowerCase());
+        if (idx !== -1) {
+          const start = Math.max(0, idx - 22);
+          const end = Math.min(fullText.length, idx + q.length + 34);
+          matches.push({
+            page: p,
+            snippet: (start > 0 ? '...' : '') + fullText.slice(start, end) + (end < fullText.length ? '...' : ''),
+          });
+          if (matches.length >= 24) break;
+        }
+      }
+      setSearchResults(matches);
+      if (matches.length === 0) {
+        showToastMsg(`عبارت «${q}» در متن قابل‌جستجوی این PDF یافت نشد`);
+      } else {
+        showToastMsg(`🔍 ${matches.length} صفحه حاوی «${q}» یافت شد`);
+      }
+    } catch {
+      showToastMsg('خطا در جستجوی متنی فایل PDF');
+    } finally {
+      setIsSearchingPdf(false);
+    }
+  }, [pdfDoc, searchQuery, showToastMsg]);
 
   const toggleBookmarkCurrentPage = () => {
     setBookmarkedPages((prev) => {
@@ -711,6 +764,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
         type: activeTool === 'highlighter' ? 'highlighter' : 'pen',
         points: [pt],
         color: strokeColor,
+        width: strokeWidth,
       });
       return;
     }
@@ -721,6 +775,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
       type: activeTool,
       points: [pt, pt],
       color: strokeColor,
+      width: strokeWidth,
     });
   };
 
@@ -763,6 +818,8 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     if (!draftStroke) return;
 
     if (draftStroke.type === 'pen' || draftStroke.type === 'highlighter') {
+      const lastPt = draftStroke.points[draftStroke.points.length - 1];
+      if (lastPt && distance(lastPt, pt) * scale < 2.0) return;
       setDraftStroke((prev) =>
         prev ? { ...prev, points: [...prev.points, pt] } : null
       );
@@ -847,6 +904,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
               { x: recognized.center.x + recognized.radius, y: recognized.center.y },
             ],
             color: strokeColor,
+            width: strokeWidth,
           };
           showToastMsg('✨ تشخیص قلم هوشمند: دایره منظم');
         } else if (recognized.kind === 'segment') {
@@ -856,6 +914,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             type: 'segment',
             points: [recognized.start, snappedEnd.point],
             color: strokeColor,
+            width: strokeWidth,
           };
           showToastMsg('✨ تشخیص قلم هوشمند: پاره‌خط صاف');
         } else if (recognized.kind === 'rectangle') {
@@ -869,6 +928,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
               { x: Math.max(...xs), y: Math.max(...ys) },
             ],
             color: strokeColor,
+            width: strokeWidth,
           };
           showToastMsg(recognized.isSquare ? '✨ تشخیص قلم هوشمند: مربع منتظم' : '✨ تشخیص قلم هوشمند: مستطیل');
         } else if (recognized.kind === 'triangle' || recognized.kind === 'polygon') {
@@ -877,6 +937,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             type: 'polygon',
             points: recognized.vertices,
             color: strokeColor,
+            width: strokeWidth,
           };
           showToastMsg(
             recognized.kind === 'triangle'
@@ -962,13 +1023,15 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
       ref={containerRef}
       className="flex w-full bg-[#F8FAFC] overflow-hidden h-[calc(100vh-3.5rem)] relative"
     >
-      {/* Collapsible Right Sidebar (RTL): Textbook Chapters, Bookmarks & Local PDF Library */}
+      {/* Collapsible Right Sidebar (RTL): Universal Multi-Subject PDF Library, Search & Chapters */}
       {sidebarOpen && (
         <aside className="w-72 shrink-0 bg-white border-l border-[#E2E8F0] flex flex-col h-full">
           {/* Document Switcher Header */}
           <div className="p-3.5 border-b border-[#E2E8F0] space-y-2.5">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#475569]">فایل فعال در کتابخوان</span>
+              <span className="text-xs font-extrabold text-[#0F172A]">
+                کتابخوان جامع PDF (همه دروس)
+              </span>
               <button
                 onClick={() => setShowLibraryPanel(!showLibraryPanel)}
                 className="inline-flex items-center gap-1 text-xs font-semibold text-[#0284C7] hover:text-[#0369A1] cursor-pointer"
@@ -1003,7 +1066,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                 className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-[#0F172A] hover:bg-[#1E293B] text-white text-xs font-medium transition-colors cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>باز کردن هر فایل PDF</span>
+                <span>باز کردن کتاب یا جزوه PDF</span>
               </button>
               {!isDefaultTextbook && (
                 <button
@@ -1011,8 +1074,61 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                   className="py-2 px-2.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F1F5F9] text-xs font-medium text-[#0F172A] transition-colors cursor-pointer"
                   title="بازگشت به کتاب هندسه ۱"
                 >
-                  کتاب هندسه
+                  هندسه ۱
                 </button>
+              )}
+            </div>
+
+            {/* Universal In-Book Full-Text Search Bar */}
+            <div className="pt-0.5">
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    if (!e.target.value.trim()) setSearchResults([]);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSearchInPdf();
+                  }}
+                  placeholder="جستجوی متن در کل این کتاب..."
+                  className="flex-1 px-2.5 py-1.5 rounded-lg border border-[#CBD5E1] text-xs text-[#0F172A] focus:outline-none focus:border-[#0284C7]"
+                />
+                <button
+                  onClick={handleSearchInPdf}
+                  disabled={isSearchingPdf}
+                  className="px-2.5 py-1.5 rounded-lg bg-[#0284C7] hover:bg-[#0369A1] text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+                  title="جستجو در متن کتاب PDF"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>{isSearchingPdf ? '...' : 'بگرد'}</span>
+                </button>
+              </div>
+              {searchResults.length > 0 && (
+                <div className="mt-2 max-h-36 overflow-y-auto rounded-lg border border-sky-200 bg-sky-50/70 p-1.5 space-y-1">
+                  <div className="flex items-center justify-between px-1 text-[10px] font-bold text-sky-800">
+                    <span>نتایج جستجو ({searchResults.length} صفحه):</span>
+                    <button
+                      onClick={() => setSearchResults([])}
+                      className="text-rose-600 hover:underline cursor-pointer"
+                    >
+                      بستن
+                    </button>
+                  </div>
+                  {searchResults.map((res) => (
+                    <button
+                      key={res.page}
+                      onClick={() => setCurrentPdfPage(res.page)}
+                      className="w-full text-right p-1.5 rounded bg-white hover:bg-sky-100 border border-sky-100 flex items-center justify-between gap-2 text-[11px] cursor-pointer"
+                    >
+                      <span className="truncate text-slate-700">{res.snippet}</span>
+                      <span className="font-mono-num font-bold text-sky-700 shrink-0">
+                        ص {isDefaultTextbook ? Math.max(1, res.page - 1) : res.page}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
 
@@ -1045,11 +1161,11 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             )}
           </div>
 
-          {/* Saved Local PDFs Panel OR Textbook TOC */}
+          {/* Saved Local PDFs Panel OR Universal / Textbook TOC */}
           {showLibraryPanel ? (
             <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs font-bold text-[#0F172A]">فایل‌های ذخیره‌شده آفلاین</h3>
+                <h3 className="text-xs font-bold text-[#0F172A]">کتابخانه آفلاین (همه دروس)</h3>
                 <button
                   onClick={() => setShowLibraryPanel(false)}
                   className="text-xs text-[#0284C7] hover:underline cursor-pointer"
@@ -1102,6 +1218,37 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                   </button>
                 </div>
               ))}
+            </div>
+          ) : !isDefaultTextbook ? (
+            /* Universal Multi-Subject PDF Section Navigator for any uploaded book (Physics, Chemistry, Math, Literature, etc.) */
+            <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
+              <div className="p-2.5 rounded-xl bg-sky-50 border border-sky-200 text-xs text-sky-900 space-y-1">
+                <div className="font-bold">📚 حالت کتابخوان جامع همه دروس</div>
+                <p className="text-[11px] text-sky-800 leading-relaxed">
+                  می‌توانید روی هر صفحه از این کتاب با قلم هوشمند، ماژیک، خط‌کش یا اشکال هندسی یادداشت‌برداری کنید یا هر بخش را با ✂️ برش تمرین به تخته سفید بفرستید.
+                </p>
+              </div>
+              <div className="text-xs font-bold text-slate-700 pt-1">پرش سریع به بخش‌های کتاب:</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {Array.from({ length: Math.min(12, totalPages) }).map((_, i) => {
+                  const step = Math.max(1, Math.floor(totalPages / Math.min(12, totalPages)));
+                  const targetP = Math.min(totalPages, i * step + 1);
+                  return (
+                    <button
+                      key={`sec-${i}-${targetP}`}
+                      onClick={() => setCurrentPdfPage(targetP)}
+                      className={`px-2.5 py-2 rounded-lg border text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                        currentPdfPage === targetP
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      <span>بخش {i + 1}</span>
+                      <span className="font-mono-num text-[11px] opacity-80">ص {targetP}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-3 space-y-3.5">
@@ -1304,6 +1451,29 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             >
               <RotateCw className="w-4 h-4 text-[#0F172A]" />
             </button>
+
+            {/* Universal Reading Filter Modes (Day / Sepia / Night) */}
+            <div className="hidden md:flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+              {(
+                [
+                  { id: 'day', label: 'روز ☀️' },
+                  { id: 'sepia', label: 'سپیا 📜' },
+                  { id: 'night', label: 'تاریک 🌙' },
+                ] as const
+              ).map((rf) => (
+                <button
+                  key={rf.id}
+                  onClick={() => setReadingFilter(rf.id)}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                    readingFilter === rf.id
+                      ? 'bg-white text-sky-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {rf.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Right Action Group: Send Page to Whiteboard, Save PNG, Fullscreen */}
@@ -1361,220 +1531,183 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
           </div>
         )}
 
-        {/* FLOATING RIGHT-SIDE VERTICAL OVERLAY TOOL DOCK ON PDF VIEWPORT */}
+        {/* COLLAPSIBLE FLAT RIGHT-SIDE VERTICAL OVERLAY TOOL DOCK ON PDF VIEWPORT (بدون زیرمنوی تو در تو) */}
         <div
-          className="absolute right-3 top-14 z-20 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-lg p-1.5 flex flex-col gap-1 w-[134px]"
+          className="absolute right-3 top-14 bottom-3 z-20 flex items-start pointer-events-none"
           role="toolbar"
-          aria-label="نوار ابزار ترسیم روی کتاب"
+          aria-label="نوار ابزار عمودی ترسیم روی کتاب"
         >
-          <button
-            onClick={() => setOverlayEnabled(!overlayEnabled)}
-            className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
-              overlayEnabled
-                ? 'bg-[#0F172A] text-white'
-                : 'bg-slate-100 text-[#475569] hover:bg-slate-200'
-            }`}
-            title="فعال/غیرفعال کردن طلق ترسیم روی کتاب"
-          >
-            {overlayEnabled ? <Eye className="w-3.5 h-3.5 shrink-0" /> : <EyeOff className="w-3.5 h-3.5 shrink-0" />}
-            <span className="truncate">{overlayEnabled ? 'طلق ترسیم فعال' : 'طلق خاموش'}</span>
-          </button>
-
-          {overlayEnabled && (
-            <>
-              <button
-                onClick={() => setActiveTool('pan')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'pan'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <Move className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">اسکرول صفحه</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('select')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'select'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <MousePointer className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">انتخاب شکل</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('smart-pen')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'smart-pen'
-                    ? 'bg-sky-600 text-white shadow-xs'
-                    : 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
-                }`}
-              >
-                <Wand2 className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">قلم هوشمند ✨</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('pen')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'pen'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <PenTool className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">قلم آزاد</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('highlighter')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'highlighter'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <Highlighter className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">ماژیک</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('laser')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'laser'
-                    ? 'bg-rose-600 text-white'
-                    : 'text-[#475569] hover:bg-rose-50 hover:text-rose-600'
-                }`}
-              >
-                <span>🔴</span>
-                <span className="truncate">لیزر تدریس</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('segment')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'segment'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <Minus className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">پاره‌خط</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('circle')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'circle'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <Circle className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">دایره</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('rect')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'rect'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <Square className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">مستطیل</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('bisector')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'bisector'
-                    ? 'bg-sky-600 text-white'
-                    : 'text-[#475569] hover:bg-slate-100'
-                }`}
-              >
-                <Compass className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">عمودمنصف</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('crop')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'crop'
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-                }`}
-              >
-                <Scissors className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">برش تمرین ✂️</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTool('eraser')}
-                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
-                  activeTool === 'eraser'
-                    ? 'bg-rose-600 text-white'
-                    : 'text-rose-700 hover:bg-rose-50'
-                }`}
-              >
-                <Eraser className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">پاک‌کن</span>
-              </button>
-
-              {/* Color Swatches */}
-              <div className="flex items-center justify-center gap-1 py-1 border-t border-slate-100">
-                {['#0284C7', '#D97706', '#059669', '#DC2626', '#0F172A'].map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setStrokeColor(c)}
-                    className={`w-4 h-4 rounded-full border cursor-pointer flex items-center justify-center ${
-                      strokeColor === c ? 'border-[#0F172A] scale-110' : 'border-transparent'
-                    }`}
-                    style={{ backgroundColor: c }}
-                  >
-                    {strokeColor === c && <Check className="w-2.5 h-2.5 text-white" />}
-                  </button>
-                ))}
-              </div>
-
-              {/* Quick Edit Row */}
-              <div className="flex items-center justify-between pt-0.5 border-t border-slate-100">
+          {rightDockCollapsed ? (
+            <button
+              onClick={() => setRightDockCollapsed(false)}
+              className="pointer-events-auto bg-slate-900 text-white px-2.5 py-2 rounded-xl shadow-lg border border-slate-700 flex items-center gap-1.5 text-xs font-bold hover:bg-slate-800 cursor-pointer"
+              title="باز کردن جعبه ابزار روی کتاب"
+            >
+              <ChevronLeft className="w-4 h-4 text-sky-400" />
+              <span>ابزارهای کتاب</span>
+            </button>
+          ) : (
+            <div className="pointer-events-auto max-h-full overflow-y-auto bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-lg p-1.5 flex flex-col gap-1 w-[148px]">
+              <div className="flex items-center justify-between px-1.5 py-0.5 border-b border-slate-100 sticky top-0 bg-white/95 z-10">
+                <span className="text-[10px] font-extrabold text-slate-600">ابزارهای روی کتاب</span>
                 <button
-                  onClick={undoLastStroke}
-                  className="p-1.5 text-[#475569] hover:text-[#0F172A] rounded-md cursor-pointer"
-                  title="بازگشت (Undo)"
+                  onClick={() => setRightDockCollapsed(true)}
+                  className="p-0.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"
+                  title="جمع کردن نوار ابزار"
                 >
-                  <Undo2 className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={duplicateSelectedStroke}
-                  disabled={!selectedStrokeId}
-                  className="p-1.5 text-[#475569] hover:text-[#0284C7] disabled:opacity-35 rounded-md cursor-pointer"
-                  title="کپی شکل انتخاب‌شده"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={clearCurrentPageAnnotations}
-                  className="p-1.5 text-[#64748B] hover:text-[#DC2626] rounded-md cursor-pointer"
-                  title="پاک کردن کل ترسیمات این صفحه"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               </div>
-            </>
+
+              <button
+                onClick={() => setOverlayEnabled(!overlayEnabled)}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                  overlayEnabled
+                    ? 'bg-[#0F172A] text-white'
+                    : 'bg-slate-100 text-[#475569] hover:bg-slate-200'
+                }`}
+                title="فعال/غیرفعال کردن طلق ترسیم روی کتاب"
+              >
+                {overlayEnabled ? <Eye className="w-3.5 h-3.5 shrink-0" /> : <EyeOff className="w-3.5 h-3.5 shrink-0" />}
+                <span className="truncate">{overlayEnabled ? 'طلق ترسیم فعال' : 'طلق خاموش'}</span>
+              </button>
+
+              {overlayEnabled && (
+                <>
+                  {(
+                    [
+                      { id: 'pan', label: 'اسکرول صفحه', icon: Move },
+                      { id: 'select', label: 'انتخاب شکل', icon: MousePointer },
+                      { id: 'smart-pen', label: 'قلم هوشمند ✨', icon: Wand2 },
+                      { id: 'pen', label: 'قلم آزاد', icon: PenTool },
+                      { id: 'highlighter', label: 'ماژیک هایلایت', icon: Highlighter },
+                      { id: 'laser', label: 'لیزر تدریس 🔴', icon: Sparkles },
+                      { id: 'segment', label: 'پاره‌خط (cm)', icon: Minus },
+                      { id: 'line', label: 'خط راست دوطرفه', icon: Minus },
+                      { id: 'circle', label: 'دایره ⊙', icon: Circle },
+                      { id: 'rect', label: 'مستطیل و کادر □', icon: Square },
+                      { id: 'bisector', label: 'عمودمنصف ⊥', icon: Compass },
+                      { id: 'crop', label: 'برش تمرین ✂️', icon: Scissors },
+                      { id: 'eraser', label: 'پاک‌کن سریع', icon: Eraser },
+                    ] as const
+                  ).map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeTool === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => setActiveTool(item.id)}
+                        className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                          isActive
+                            ? item.id === 'eraser' || item.id === 'laser'
+                              ? 'bg-rose-600 text-white'
+                              : item.id === 'crop'
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-sky-600 text-white shadow-xs'
+                            : item.id === 'smart-pen'
+                            ? 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
+                            : item.id === 'crop'
+                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                            : item.id === 'eraser'
+                            ? 'text-rose-700 hover:bg-rose-50'
+                            : 'text-[#475569] hover:bg-slate-100'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </button>
+                    );
+                  })}
+
+                  {/* Pen / Shape Size Slider (1px - 14px) */}
+                  <div className="pt-1 border-t border-slate-100 px-1 flex flex-col gap-1 shrink-0">
+                    <div className="flex items-center justify-between text-[10px] font-bold text-slate-600">
+                      <span>سایز قلم/خط:</span>
+                      <span className="font-mono-num text-sky-700">{strokeWidth}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={14}
+                      step={1}
+                      value={strokeWidth}
+                      onChange={(e) => setStrokeWidth(Number(e.target.value))}
+                      className="w-full h-1.5 accent-sky-600 cursor-pointer"
+                      aria-label="سایز قلم روی PDF"
+                    />
+                  </div>
+
+                  {/* Color Swatches + Custom Color Picker */}
+                  <div className="flex items-center justify-center gap-1 py-1 border-t border-slate-100 shrink-0">
+                    {['#0284C7', '#D97706', '#059669', '#DC2626', '#0F172A'].map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => setStrokeColor(c)}
+                        className={`w-4 h-4 rounded-full border cursor-pointer flex items-center justify-center ${
+                          strokeColor === c ? 'border-[#0F172A] scale-110' : 'border-transparent'
+                        }`}
+                        style={{ backgroundColor: c }}
+                      >
+                        {strokeColor === c && <Check className="w-2.5 h-2.5 text-white" />}
+                      </button>
+                    ))}
+                    <label
+                      className="relative w-4 h-4 rounded-full border border-slate-300 overflow-hidden cursor-pointer flex items-center justify-center"
+                      title="انتخاب رنگ دلخواه"
+                    >
+                      <input
+                        type="color"
+                        value={strokeColor}
+                        onChange={(e) => setStrokeColor(e.target.value)}
+                        className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                      />
+                      <span
+                        className="w-full h-full block"
+                        style={{
+                          background:
+                            'conic-gradient(from 0deg, #ef4444, #f59e0b, #10b981, #0284c7, #7c3aed, #ef4444)',
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {/* Quick Edit Row */}
+                  <div className="flex items-center justify-between pt-0.5 border-t border-slate-100 shrink-0">
+                    <button
+                      onClick={undoLastStroke}
+                      className="p-1.5 text-[#475569] hover:text-[#0F172A] rounded-md cursor-pointer"
+                      title="بازگشت (Undo)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={duplicateSelectedStroke}
+                      disabled={!selectedStrokeId}
+                      className="p-1.5 text-[#475569] hover:text-[#0284C7] disabled:opacity-35 rounded-md cursor-pointer"
+                      title="کپی شکل انتخاب‌شده"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={clearCurrentPageAnnotations}
+                      className="p-1.5 text-[#64748B] hover:text-[#DC2626] rounded-md cursor-pointer"
+                      title="پاک کردن کل ترسیمات این صفحه"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
 
         {/* Scrollable PDF Viewport with Transparent Interactive Canvas Overlay */}
         <div
           ref={viewportScrollRef}
-          className="flex-1 overflow-auto p-4 sm:p-6 flex justify-center items-start drafting-grid"
+          className={`flex-1 overflow-auto p-4 sm:p-6 flex justify-center items-start ${
+            readingFilter === 'night' ? 'bg-slate-900' : 'drafting-grid'
+          }`}
         >
           {isLoading ? (
             <div className="my-auto flex flex-col items-center gap-3 p-8 bg-white rounded-xl border border-[#E2E8F0] shadow-xs">
@@ -1601,8 +1734,19 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             </div>
           ) : (
             <div className="relative bg-white shadow-md border border-[#CBD5E1] rounded-sm overflow-hidden">
-              {/* Underlying PDF Canvas */}
-              <canvas ref={pdfCanvasRef} className="block" />
+              {/* Underlying PDF Canvas with Reading Mode Filter */}
+              <canvas
+                ref={pdfCanvasRef}
+                className="block transition-all"
+                style={{
+                  filter:
+                    readingFilter === 'sepia'
+                      ? 'sepia(0.38) contrast(0.96) brightness(0.98)'
+                      : readingFilter === 'night'
+                      ? 'invert(0.9) hue-rotate(180deg)'
+                      : 'none',
+                }}
+              />
 
               {/* Transparent Geometric Construction Layer directly on top of PDF */}
               <canvas

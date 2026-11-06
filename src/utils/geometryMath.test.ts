@@ -14,6 +14,8 @@ import {
   rotatePointAroundCenter,
   circleTangentsFromPoint,
   pointInPolygon,
+  circumcircleThroughThreePoints,
+  computePolygonMetrics,
 } from './geometryMath';
 
 test('distance and midpoint calculations are accurate', () => {
@@ -157,4 +159,24 @@ test('Super Geometry v2.0 transformations, tangents, and pointInPolygon work acc
   assert.equal(pointInPolygon({ x: 150, y: 50 }, sq), false);
 });
 
+test('Super Geometry v3.0 circumcircleThroughThreePoints and computePolygonMetrics work accurately', () => {
+  // Right triangle (0,0), (60,0), (0,80) -> circumcenter at midpoint of hypotenuse (30,40), radius 50
+  const cc = circumcircleThroughThreePoints({ x: 0, y: 0 }, { x: 60, y: 0 }, { x: 0, y: 80 });
+  assert.ok(cc);
+  assert.deepEqual(cc!.center, { x: 30, y: 40 });
+  assert.equal(cc!.radius, 50);
 
+  // Square 80x80 px at 40px/cm -> 2cm x 2cm -> area = 4 cm², perimeter = 8 cm
+  const metrics = computePolygonMetrics(
+    [
+      { x: 0, y: 0 },
+      { x: 80, y: 0 },
+      { x: 80, y: 80 },
+      { x: 0, y: 80 },
+    ],
+    40
+  );
+  assert.equal(metrics.areaCm2, 4);
+  assert.equal(metrics.perimeterCm, 8);
+  assert.deepEqual(metrics.centroid, { x: 40, y: 40 });
+});

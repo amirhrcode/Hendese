@@ -1120,5 +1120,56 @@ export function computeVertexAngleArc(
   };
 }
 
+/**
+ * Super Geometry v3.0: Computes the exact circumcircle passing through three non-collinear points A, B, C.
+ */
+export function circumcircleThroughThreePoints(
+  a: Point2D,
+  b: Point2D,
+  c: Point2D
+): { center: Point2D; radius: number } | null {
+  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+  if (Math.abs(d) < 1e-6) return null;
+  const aSq = a.x * a.x + a.y * a.y;
+  const bSq = b.x * b.x + b.y * b.y;
+  const cSq = c.x * c.x + c.y * c.y;
+  const ux = (aSq * (b.y - c.y) + bSq * (c.y - a.y) + cSq * (a.y - b.y)) / d;
+  const uy = (aSq * (c.x - b.x) + bSq * (a.x - c.x) + cSq * (b.x - a.x)) / d;
+  const center = { x: Number(ux.toFixed(2)), y: Number(uy.toFixed(2)) };
+  const radius = Number(distance(center, a).toFixed(2));
+  return { center, radius };
+}
 
-
+/**
+ * Super Geometry v3.0: Computes exact polygon area (cm²), perimeter (cm), and centroid.
+ */
+export function computePolygonMetrics(
+  vertices: Point2D[],
+  pxPerCm = 40
+): { areaCm2: number; perimeterCm: number; centroid: Point2D } {
+  if (vertices.length < 3) {
+    return {
+      areaCm2: 0,
+      perimeterCm: 0,
+      centroid: vertices[0] || { x: 0, y: 0 },
+    };
+  }
+  const areaPx2 = polygonAreaShoelace(vertices);
+  let perimPx = 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < vertices.length; i++) {
+    const next = vertices[(i + 1) % vertices.length];
+    perimPx += distance(vertices[i], next);
+    cx += vertices[i].x;
+    cy += vertices[i].y;
+  }
+  return {
+    areaCm2: Number((areaPx2 / (pxPerCm * pxPerCm)).toFixed(2)),
+    perimeterCm: Number((perimPx / pxPerCm).toFixed(2)),
+    centroid: {
+      x: Number((cx / vertices.length).toFixed(1)),
+      y: Number((cy / vertices.length).toFixed(1)),
+    },
+  };
+}

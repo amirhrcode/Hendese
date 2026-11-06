@@ -127,7 +127,7 @@ export const PWAInstallButton: React.FC<{ onQuickExportProject?: () => void }> =
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
-                  اپلیکیشن ترسیم هندسه — اجرای آفلاین و نسخه مستقل
+                  اپلیکیشن ترسیم (نسخه ۳.۰) — اجرای ۱۰۰٪ آفلاین و نسخه مستقل
                 </h3>
                 <p className="text-xs font-semibold text-sky-700 mt-0.5">
                   طراح و توسعه‌دهنده: امیرحسین رضایی
@@ -136,7 +136,7 @@ export const PWAInstallButton: React.FC<{ onQuickExportProject?: () => void }> =
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              موتور <strong>PDF.js</strong> (شامل فایل‌های <code>pdf.min.mjs</code>، <code>pdf.worker.min.mjs</code>، دیکدرهای تصویر <code>wasm</code> و فونت‌های استاندارد) به طور کامل در پوشه <code>/public/pdfjs/</code> داخل همین پروژه قرار داده شده و بدون نیاز به اینترنت روی دسکتاپ، گوشی و تلویزیون‌های لمسی اندروید (Touch TV) کار می‌کند.
+              موتور <strong>PDF.js</strong> (شامل فایل‌های <code>pdf.min.mjs</code>، <code>pdf.worker.min.mjs</code>، دیکدرهای <code>wasm</code> و فونت‌های استاندارد) و همچنین فونت‌های فارسی <strong>Vazirmatn</strong> به طور کامل در پوشه‌های محلی <code>/public/pdfjs/</code> و <code>/public/fonts/</code> داخل همین پروژه قرار داده شده‌اند و بدون هیچ وابستگی به اینترنت روی ویندوز، گوشی و تلویزیون‌های لمسی اندروید (Touch TV) کار می‌کنند.
             </p>
 
             {/* Option 1: Direct Standalone index.html download */}

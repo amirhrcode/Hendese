@@ -90,11 +90,11 @@ export default function App() {
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="text-sm sm:text-base font-bold tracking-tight text-[#0F172A] leading-none">
-                ابر ترسیم هندسه
+              <span className="text-sm sm:text-base font-extrabold tracking-tight text-[#0F172A] leading-none">
+                ترسیم
               </span>
-              <span className="px-1.5 py-0.5 rounded bg-sky-100 text-[#0284C7] text-[10px] font-bold leading-none">
-                v2.0
+              <span className="px-1.5 py-0.5 rounded bg-sky-100 text-[#0284C7] text-[10px] font-extrabold leading-none border border-sky-200">
+                ابر ترسیم v3.0
               </span>
             </div>
             <span className="text-[10px] sm:text-[11px] text-[#475569] font-medium block mt-0.5 whitespace-nowrap">
@@ -124,7 +124,7 @@ export default function App() {
                 : 'border-transparent text-[#475569] hover:text-[#0F172A]'
             }`}
           >
-            کتابخوان و میز ترسیم PDF
+            کتابخوان جامع PDF (همه دروس)
           </button>
 
           <button
