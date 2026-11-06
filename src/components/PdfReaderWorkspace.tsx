@@ -1191,14 +1191,14 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
       )}
 
       {/* Main Center PDF + Transparent Geometry Canvas Area */}
-      <div className="flex-1 flex flex-col h-full min-w-0">
-        {/* PDF & Drafting Overlay Toolbar (Flex-Wrap, Zero Horizontal Scrollbar) */}
-        <div className="bg-white border-b border-[#E2E8F0] px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0">
+      <div className="flex-1 flex flex-col h-full min-w-0 relative">
+        {/* SINGLE ULTRA-SLIM PDF NAVIGATION BAR (Zero Clutter) */}
+        <div className="h-11 bg-white border-b border-[#E2E8F0] px-3 flex items-center justify-between gap-2 shrink-0 overflow-x-auto no-scrollbar">
           {/* Sidebar Toggle + Page Navigation + Zoom */}
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               onClick={() => setSidebarOpen((v) => !v)}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
+              className="px-2 py-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
               title={sidebarOpen ? 'بستن نوار کناری' : 'باز کردن نوار کناری'}
             >
               {sidebarOpen ? (
@@ -1209,12 +1209,12 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
               <span className="hidden sm:inline">{sidebarOpen ? 'بستن فهرست' : 'فهرست کتاب'}</span>
             </button>
 
-            <div className="h-5 w-px bg-[#E2E8F0] mx-0.5" />
+            <div className="h-4 w-px bg-[#E2E8F0] mx-0.5" />
 
             <button
               onClick={() => setCurrentPdfPage((p) => Math.max(1, p - 1))}
               disabled={currentPdfPage <= 1}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] disabled:opacity-40 cursor-pointer"
+              className="p-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] disabled:opacity-40 cursor-pointer"
               title="صفحه قبل"
             >
               <ChevronRight className="w-4 h-4 text-[#0F172A]" />
@@ -1233,7 +1233,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                     setCurrentPdfPage(Math.min(Math.max(1, target), totalPages));
                   }
                 }}
-                className="w-12 px-1 py-1 text-center font-mono-num font-bold text-[#0F172A] border border-[#CBD5E1] rounded-md focus:outline-none focus:border-[#0284C7]"
+                className="w-11 px-1 py-0.5 text-center font-mono-num font-bold text-[#0F172A] border border-[#CBD5E1] rounded-md focus:outline-none focus:border-[#0284C7]"
               />
               <span className="text-[#64748B] font-mono-num">
                 / {isDefaultTextbook ? totalPages - 1 : totalPages}
@@ -1243,13 +1243,12 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             <button
               onClick={() => setCurrentPdfPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPdfPage >= totalPages}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] disabled:opacity-40 cursor-pointer"
+              className="p-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] disabled:opacity-40 cursor-pointer"
               title="صفحه بعد"
             >
               <ChevronLeft className="w-4 h-4 text-[#0F172A]" />
             </button>
 
-            {/* Bookmark & Page Grid Buttons */}
             <button
               onClick={toggleBookmarkCurrentPage}
               className={`p-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 cursor-pointer ${
@@ -1271,12 +1270,12 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
               <span className="hidden md:inline">نمای صفحات</span>
             </button>
 
-            <div className="h-5 w-px bg-[#E2E8F0] mx-0.5" />
+            <div className="h-4 w-px bg-[#E2E8F0] mx-0.5" />
 
             {/* Zoom, Fit-Width & Rotation Controls */}
             <button
               onClick={() => setScale((s) => Math.max(0.6, +(s - 0.15).toFixed(2)))}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
+              className="p-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
               title="کوچک‌نمایی"
             >
               <ZoomOut className="w-4 h-4 text-[#0F172A]" />
@@ -1286,7 +1285,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             </span>
             <button
               onClick={() => setScale((s) => Math.min(2.6, +(s + 0.15).toFixed(2)))}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
+              className="p-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
               title="بزرگ‌نمایی"
             >
               <ZoomIn className="w-4 h-4 text-[#0F172A]" />
@@ -1300,218 +1299,11 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             </button>
             <button
               onClick={() => setRotation((r) => (r + 90) % 360)}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
+              className="p-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
               title="چرخش ۹۰ درجه صفحه"
             >
               <RotateCw className="w-4 h-4 text-[#0F172A]" />
             </button>
-          </div>
-
-          {/* Transparent Geometric Overlay Tools (Draw directly on PDF) */}
-          <div className="flex items-center gap-1 bg-[#F8FAFC] p-1 rounded-lg border border-[#E2E8F0] flex-wrap">
-            <button
-              onClick={() => setOverlayEnabled(!overlayEnabled)}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                overlayEnabled
-                  ? 'bg-[#0F172A] text-white'
-                  : 'text-[#475569] hover:bg-[#E2E8F0]'
-              }`}
-              title="فعال/غیرفعال کردن طلق ترسیم روی کتاب"
-            >
-              {overlayEnabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-              <span>طلق ترسیم</span>
-            </button>
-
-            {overlayEnabled && (
-              <>
-                <button
-                  onClick={() => setActiveTool('pan')}
-                  className={`p-1.5 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'pan'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                  title="اسکرول و مطالعه آزاد"
-                >
-                  <Move className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('select')}
-                  className={`p-1.5 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'select'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                  title="انتخاب و جابه‌جایی شکل روی کتاب"
-                >
-                  <MousePointer className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('smart-pen')}
-                  className={`px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'smart-pen'
-                      ? 'bg-[#0284C7] text-white shadow-xs'
-                      : 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
-                  }`}
-                  title="قلم هوشمند تشخیص دایره، خط، مثلث و مستطیل روی PDF"
-                >
-                  <Wand2 className="w-3.5 h-3.5" />
-                  <span>قلم هوشمند ✨</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('pen')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'pen'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                >
-                  <PenTool className="w-3.5 h-3.5" />
-                  <span>قلم</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('highlighter')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'highlighter'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                >
-                  <Highlighter className="w-3.5 h-3.5" />
-                  <span>ماژیک</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('laser')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'laser'
-                      ? 'bg-rose-600 text-white shadow-xs'
-                      : 'text-[#475569] hover:text-rose-600'
-                  }`}
-                  title="لیزر تدریس روی کتاب"
-                >
-                  <span>لیزر 🔴</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('segment')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'segment'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                >
-                  <Minus className="w-3.5 h-3.5" />
-                  <span>پاره‌خط</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('circle')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'circle'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                >
-                  <Circle className="w-3.5 h-3.5" />
-                  <span>دایره</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('rect')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'rect'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                >
-                  <Square className="w-3.5 h-3.5" />
-                  <span>مستطیل</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('bisector')}
-                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'bisector'
-                      ? 'bg-white text-[#0284C7] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#0F172A]'
-                  }`}
-                >
-                  <Compass className="w-3.5 h-3.5" />
-                  <span>عمودمنصف</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('crop')}
-                  className={`px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'crop'
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-                  }`}
-                  title="کادر بکشید تا تمرین یا شکل کتاب برش خورده و به تخته سفید ۲بعدی فرستاده شود"
-                >
-                  <Scissors className="w-3.5 h-3.5" />
-                  <span>برش تمرین به تخته ✂️</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTool('eraser')}
-                  className={`p-1.5 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
-                    activeTool === 'eraser'
-                      ? 'bg-white text-[#DC2626] shadow-xs border border-[#E2E8F0]'
-                      : 'text-[#475569] hover:text-[#DC2626]'
-                  }`}
-                  title="پاک‌کن موردی"
-                >
-                  <Eraser className="w-3.5 h-3.5" />
-                </button>
-
-                {/* Color Swatches */}
-                <div className="flex items-center gap-1 px-1.5 border-r border-[#E2E8F0]">
-                  {['#0284C7', '#D97706', '#059669', '#DC2626', '#0F172A'].map((c) => (
-                    <button
-                      key={c}
-                      onClick={() => setStrokeColor(c)}
-                      className={`w-4 h-4 rounded-full border cursor-pointer flex items-center justify-center ${
-                        strokeColor === c ? 'border-[#0F172A] scale-110' : 'border-transparent'
-                      }`}
-                      style={{ backgroundColor: c }}
-                    >
-                      {strokeColor === c && <Check className="w-2.5 h-2.5 text-white" />}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={duplicateSelectedStroke}
-                  disabled={!selectedStrokeId}
-                  className="p-1.5 text-[#475569] hover:text-[#0284C7] disabled:opacity-35 rounded-md cursor-pointer"
-                  title="کپی شکل انتخاب‌شده"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  onClick={undoLastStroke}
-                  className="p-1.5 text-[#475569] hover:text-[#0F172A] rounded-md cursor-pointer"
-                  title="بازگشت (Undo)"
-                >
-                  <Undo2 className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  onClick={clearCurrentPageAnnotations}
-                  className="p-1.5 text-[#64748B] hover:text-[#DC2626] rounded-md cursor-pointer"
-                  title="پاک کردن کل ترسیمات این صفحه"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </>
-            )}
           </div>
 
           {/* Right Action Group: Send Page to Whiteboard, Save PNG, Fullscreen */}
@@ -1519,32 +1311,32 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             {onSendImageTo2DStudio && (
               <button
                 onClick={sendFullPageToWhiteboard}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-colors cursor-pointer"
                 title="ارسال کل این صفحه به پس‌زمینه تخته سفید ۲بعدی برای حل تمرین"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span className="hidden xl:inline">ارسال صفحه به تخته سفید</span>
+                <span>ارسال صفحه به تخته سفید</span>
               </button>
             )}
 
             <button
               onClick={exportAnnotatedPdfPagePng}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
+              className="px-2 py-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
               title="دانلود تصویر این صفحه به همراه ترسیمات (PNG)"
             >
-              <ImageDown className="w-4 h-4 text-[#0284C7]" />
-              <span className="hidden 2xl:inline">ذخیره PNG</span>
+              <ImageDown className="w-3.5 h-3.5 text-[#0284C7]" />
+              <span className="hidden lg:inline">ذخیره PNG</span>
             </button>
 
             <button
               onClick={toggleFullscreen}
-              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
+              className="px-2 py-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
               title={isFullscreen ? 'خروج از حالت تمام‌صفحه' : 'نمایش تمام‌صفحه'}
             >
               {isFullscreen ? (
-                <Minimize2 className="w-4 h-4 text-[#0284C7]" />
+                <Minimize2 className="w-3.5 h-3.5 text-[#0284C7]" />
               ) : (
-                <Maximize2 className="w-4 h-4 text-[#0284C7]" />
+                <Maximize2 className="w-3.5 h-3.5 text-[#0284C7]" />
               )}
               <span className="hidden md:inline">{isFullscreen ? 'خروج' : 'تمام‌صفحه'}</span>
             </button>
@@ -1568,6 +1360,216 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             )}
           </div>
         )}
+
+        {/* FLOATING RIGHT-SIDE VERTICAL OVERLAY TOOL DOCK ON PDF VIEWPORT */}
+        <div
+          className="absolute right-3 top-14 z-20 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-lg p-1.5 flex flex-col gap-1 w-[134px]"
+          role="toolbar"
+          aria-label="نوار ابزار ترسیم روی کتاب"
+        >
+          <button
+            onClick={() => setOverlayEnabled(!overlayEnabled)}
+            className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+              overlayEnabled
+                ? 'bg-[#0F172A] text-white'
+                : 'bg-slate-100 text-[#475569] hover:bg-slate-200'
+            }`}
+            title="فعال/غیرفعال کردن طلق ترسیم روی کتاب"
+          >
+            {overlayEnabled ? <Eye className="w-3.5 h-3.5 shrink-0" /> : <EyeOff className="w-3.5 h-3.5 shrink-0" />}
+            <span className="truncate">{overlayEnabled ? 'طلق ترسیم فعال' : 'طلق خاموش'}</span>
+          </button>
+
+          {overlayEnabled && (
+            <>
+              <button
+                onClick={() => setActiveTool('pan')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'pan'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <Move className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">اسکرول صفحه</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('select')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'select'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <MousePointer className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">انتخاب شکل</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('smart-pen')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'smart-pen'
+                    ? 'bg-sky-600 text-white shadow-xs'
+                    : 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
+                }`}
+              >
+                <Wand2 className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">قلم هوشمند ✨</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('pen')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'pen'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <PenTool className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">قلم آزاد</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('highlighter')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'highlighter'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <Highlighter className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">ماژیک</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('laser')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'laser'
+                    ? 'bg-rose-600 text-white'
+                    : 'text-[#475569] hover:bg-rose-50 hover:text-rose-600'
+                }`}
+              >
+                <span>🔴</span>
+                <span className="truncate">لیزر تدریس</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('segment')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'segment'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <Minus className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">پاره‌خط</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('circle')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'circle'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <Circle className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">دایره</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('rect')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'rect'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <Square className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">مستطیل</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('bisector')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'bisector'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-[#475569] hover:bg-slate-100'
+                }`}
+              >
+                <Compass className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">عمودمنصف</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('crop')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'crop'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                }`}
+              >
+                <Scissors className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">برش تمرین ✂️</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTool('eraser')}
+                className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  activeTool === 'eraser'
+                    ? 'bg-rose-600 text-white'
+                    : 'text-rose-700 hover:bg-rose-50'
+                }`}
+              >
+                <Eraser className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">پاک‌کن</span>
+              </button>
+
+              {/* Color Swatches */}
+              <div className="flex items-center justify-center gap-1 py-1 border-t border-slate-100">
+                {['#0284C7', '#D97706', '#059669', '#DC2626', '#0F172A'].map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setStrokeColor(c)}
+                    className={`w-4 h-4 rounded-full border cursor-pointer flex items-center justify-center ${
+                      strokeColor === c ? 'border-[#0F172A] scale-110' : 'border-transparent'
+                    }`}
+                    style={{ backgroundColor: c }}
+                  >
+                    {strokeColor === c && <Check className="w-2.5 h-2.5 text-white" />}
+                  </button>
+                ))}
+              </div>
+
+              {/* Quick Edit Row */}
+              <div className="flex items-center justify-between pt-0.5 border-t border-slate-100">
+                <button
+                  onClick={undoLastStroke}
+                  className="p-1.5 text-[#475569] hover:text-[#0F172A] rounded-md cursor-pointer"
+                  title="بازگشت (Undo)"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={duplicateSelectedStroke}
+                  disabled={!selectedStrokeId}
+                  className="p-1.5 text-[#475569] hover:text-[#0284C7] disabled:opacity-35 rounded-md cursor-pointer"
+                  title="کپی شکل انتخاب‌شده"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={clearCurrentPageAnnotations}
+                  className="p-1.5 text-[#64748B] hover:text-[#DC2626] rounded-md cursor-pointer"
+                  title="پاک کردن کل ترسیمات این صفحه"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Scrollable PDF Viewport with Transparent Interactive Canvas Overlay */}
         <div

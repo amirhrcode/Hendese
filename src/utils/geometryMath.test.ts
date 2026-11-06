@@ -10,6 +10,10 @@ import {
   computeRightTriangleMetrics,
   classifyConicSection,
   recognizeSmartStroke,
+  reflectPointAcrossLine,
+  rotatePointAroundCenter,
+  circleTangentsFromPoint,
+  pointInPolygon,
 } from './geometryMath';
 
 test('distance and midpoint calculations are accurate', () => {
@@ -125,4 +129,32 @@ test('recognizeSmartStroke detects hand-drawn circles, segments, and triangles',
   const scratchRes = recognizeSmartStroke(scratchPts);
   assert.equal(scratchRes.kind, 'erase-gesture');
 });
+
+test('Super Geometry v2.0 transformations, tangents, and pointInPolygon work accurately', () => {
+  // Reflect (10, 20) across x-axis (0,0)-(100,0) -> (10, -20)
+  const refl = reflectPointAcrossLine({ x: 10, y: 20 }, { x: 0, y: 0 }, { x: 100, y: 0 });
+  assert.deepEqual(refl, { x: 10, y: -20 });
+
+  // Rotate (10, 0) around (0, 0) by 90 deg -> (0, 10)
+  const rot90 = rotatePointAroundCenter({ x: 10, y: 0 }, { x: 0, y: 0 }, 90);
+  assert.deepEqual(rot90, { x: 0, y: 10 });
+
+  // Circle tangents from (100, 0) to circle centered at (0, 0) with radius 60
+  const tangents = circleTangentsFromPoint({ x: 100, y: 0 }, { x: 0, y: 0 }, 60);
+  assert.equal(tangents.length, 2);
+  // Each tangent point must be at distance 60 from center and 80 from external point (60-80-100 right triangle)
+  assert.ok(Math.abs(distance(tangents[0], { x: 0, y: 0 }) - 60) < 0.05);
+  assert.ok(Math.abs(distance(tangents[0], { x: 100, y: 0 }) - 80) < 0.05);
+
+  // Point in polygon
+  const sq = [
+    { x: 0, y: 0 },
+    { x: 100, y: 0 },
+    { x: 100, y: 100 },
+    { x: 0, y: 100 },
+  ];
+  assert.equal(pointInPolygon({ x: 50, y: 50 }, sq), true);
+  assert.equal(pointInPolygon({ x: 150, y: 50 }, sq), false);
+});
+
 

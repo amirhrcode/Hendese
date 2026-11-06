@@ -35,7 +35,19 @@ import {
   Type,
   Check,
   ImageDown,
-  Wand2
+  Wand2,
+  ZoomIn,
+  ZoomOut,
+  FlipHorizontal2,
+  RotateCw,
+  Shapes,
+  Wrench,
+  Zap,
+  ChevronLeft,
+  ChevronRight,
+  Play,
+  Pause,
+  Plus,
 } from 'lucide-react';
 import {
   Point2D,
@@ -54,6 +66,11 @@ import {
   snapSmartLineEndpoint,
   snapSmartCircleRadius,
   SmartRecognizedShape,
+  reflectPointAcrossLine,
+  rotatePointAroundCenter,
+  circleTangentsFromPoint,
+  pointInPolygon,
+  computeVertexAngleArc,
 } from '../utils/geometryMath';
 import { GEOMETRY_PRESETS, GeometryPreset } from '../data/textbookData';
 
@@ -76,6 +93,8 @@ export type Tool2D =
   | 'angle-bisector'
   | 'perp-line'
   | 'parallel-line'
+  | 'circle-tangent'
+  | 'axial-symmetry'
   | 'polygon'
   | 'text';
 
@@ -140,6 +159,14 @@ interface BoardSnapshot {
   notes: CanvasTextNote[];
 }
 
+interface WhiteboardSlide extends BoardSnapshot {
+  id: string;
+  title: string;
+  boardBg: BoardBackground;
+}
+
+type DockFlyoutCategory = 'shapes' | 'constructions' | 'templates' | 'instruments' | 'pens' | null;
+
 interface Geometry2DStudioProps {
   initialPresetId?: string;
   onJumpToTextbookPage?: (bookPage: number) => void;
@@ -173,10 +200,16 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const [boardBg, setBoardBg] = useState<BoardBackground>('grid');
   const [snapToGrid, setSnapToGrid] = useState<boolean>(false);
   const [showMeasurements, setShowMeasurements] = useState<boolean>(true);
+  const [showAngleArcs, setShowAngleArcs] = useState<boolean>(true);
+  const [canvasZoom, setCanvasZoom] = useState<number>(1);
   const [smartRecognitionToast, setSmartRecognitionToast] = useState<string | null>(null);
 
-  // Collapsible Sidebar state
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
+  // Right-Side Vertical Tool Dock State
+  const [rightDockCollapsed, setRightDockCollapsed] = useState<boolean>(false);
+  const [openFlyout, setOpenFlyout] = useState<DockFlyoutCategory>(null);
+
+  // Left Inspector Sidebar State
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   // Core Canvas State
   const [points, setPoints] = useState<CanvasPoint[]>(initialPreset.points);
@@ -185,6 +218,22 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const [polygons, setPolygons] = useState<CanvasPolygon[]>(initialPreset.polygons || []);
   const [strokes, setStrokes] = useState<FreehandStroke[]>([]);
   const [notes, setNotes] = useState<CanvasTextNote[]>([]);
+
+  // Multi-Slide Whiteboard Pages
+  const [slides, setSlides] = useState<WhiteboardSlide[]>([
+    {
+      id: 'slide-1',
+      title: 'تخته ۱',
+      points: initialPreset.points,
+      segments: initialPreset.segments,
+      circles: initialPreset.circles,
+      polygons: initialPreset.polygons || [],
+      strokes: [],
+      notes: [],
+      boardBg: 'grid',
+    },
+  ]);
+  const [activeSlideIndex, setActiveSlideIndex] = useState<number>(0);
 
   // Undo / Redo History
   const [history, setHistory] = useState<BoardSnapshot[]>([]);
@@ -201,7 +250,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     lastPt: Point2D;
   } | null>(null);
 
-  // Fast Drag-to-Draw State (for Segment, Line, Ray, Circle, Rect, Triangle, Regular Polygon, Perp-Bisector, Pen)
+  // Fast Drag-to-Draw State
   const [dragDrawStart, setDragDrawStart] = useState<{
     startPt: Point2D;
     currentPt: Point2D;
@@ -217,11 +266,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const [pendingNotePos, setPendingNotePos] = useState<Point2D | null>(null);
   const [pendingNoteText, setPendingNoteText] = useState<string>('');
 
-  // Physical instruments & lattice mode
+  // Physical instruments (Ruler, Protractor, Set-Square / گونیا)
   const [showRuler, setShowRuler] = useState<boolean>(false);
   const [rulerPos, setRulerPos] = useState<{ x: number; y: number; angle: number }>({
     x: 190,
-    y: 420,
+    y: 410,
     angle: 0,
   });
   const [showProtractor, setShowProtractor] = useState<boolean>(false);
@@ -229,14 +278,23 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     x: 380,
     y: 260,
   });
-  const [draggingInstrument, setDraggingInstrument] = useState<'ruler' | 'protractor' | null>(null);
+  const [showSetSquare, setShowSetSquare] = useState<boolean>(false);
+  const [setSquarePos, setSetSquarePos] = useState<{ x: number; y: number; angle: number }>({
+    x: 260,
+    y: 180,
+    angle: 0,
+  });
+  const [draggingInstrument, setDraggingInstrument] = useState<
+    'ruler' | 'protractor' | 'setsquare' | null
+  >(null);
 
-  // Triangle Concurrency toggles
+  // Triangle Concurrency toggles & Animated Step Player
   const [showCircumcenter, setShowCircumcenter] = useState<boolean>(false);
   const [showIncenter, setShowIncenter] = useState<boolean>(false);
   const [showCentroid, setShowCentroid] = useState<boolean>(false);
   const [showOrthocenter, setShowOrthocenter] = useState<boolean>(false);
   const [activeStepIndex, setActiveStepIndex] = useState<number>(initialPreset.steps.length - 1);
+  const [isPlayingSteps, setIsPlayingSteps] = useState<boolean>(false);
 
   // Thales & Right Triangle Interactive Calculators
   const [thalesAd, setThalesAd] = useState<number>(2);
@@ -264,6 +322,21 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     return () => window.clearInterval(timer);
   }, [laserTrail.length]);
 
+  // Step-by-step animated construction player
+  useEffect(() => {
+    if (!isPlayingSteps || !activePreset) return;
+    const timer = window.setInterval(() => {
+      setActiveStepIndex((prev) => {
+        if (prev >= activePreset.steps.length - 1) {
+          setIsPlayingSteps(false);
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, 1400);
+    return () => window.clearInterval(timer);
+  }, [isPlayingSteps, activePreset]);
+
   const showSmartToast = useCallback((msg: string) => {
     setSmartRecognitionToast(msg);
     if (toastTimerRef.current) {
@@ -289,6 +362,74 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     ]);
     setRedoStack([]);
   }, [points, segments, circles, polygons, strokes, notes]);
+
+  // Multi-Slide Switcher & Creator
+  const saveCurrentSlideState = useCallback(
+    (list: WhiteboardSlide[], index: number): WhiteboardSlide[] => {
+      return list.map((sl, idx) =>
+        idx === index
+          ? {
+              ...sl,
+              points: points.map((p) => ({ ...p })),
+              segments: segments.map((s) => ({ ...s })),
+              circles: circles.map((c) => ({ ...c })),
+              polygons: polygons.map((p) => ({ ...p, vertices: [...p.vertices] })),
+              strokes: strokes.map((s) => ({ ...s, points: [...s.points] })),
+              notes: notes.map((n) => ({ ...n })),
+              boardBg,
+            }
+          : sl
+      );
+    },
+    [points, segments, circles, polygons, strokes, notes, boardBg]
+  );
+
+  const switchToSlide = (targetIdx: number) => {
+    if (targetIdx === activeSlideIndex || targetIdx < 0 || targetIdx >= slides.length) return;
+    const updated = saveCurrentSlideState(slides, activeSlideIndex);
+    const target = updated[targetIdx];
+    setSlides(updated);
+    setActiveSlideIndex(targetIdx);
+    setPoints(target.points);
+    setSegments(target.segments);
+    setCircles(target.circles);
+    setPolygons(target.polygons);
+    setStrokes(target.strokes);
+    setNotes(target.notes);
+    setBoardBg(target.boardBg);
+    setSelectedItem(null);
+    setSelectedPointIds([]);
+  };
+
+  const addNewWhiteboardSlide = () => {
+    const updated = saveCurrentSlideState(slides, activeSlideIndex);
+    const newIdx = updated.length;
+    const newSlide: WhiteboardSlide = {
+      id: `slide-${Date.now()}`,
+      title: `تخته ${newIdx + 1}`,
+      points: [],
+      segments: [],
+      circles: [],
+      polygons: [],
+      strokes: [],
+      notes: [],
+      boardBg: 'white',
+    };
+    setSlides([...updated, newSlide]);
+    setActiveSlideIndex(newIdx);
+    setActivePreset(null);
+    setPoints([]);
+    setSegments([]);
+    setCircles([]);
+    setPolygons([]);
+    setStrokes([]);
+    setNotes([]);
+    setBoardBg('white');
+    setSelectedItem(null);
+    setSelectedPointIds([]);
+    setActiveTool('smart-pen');
+    showSmartToast(`📄 ${newSlide.title} (سفید و خالی) ایجاد شد — تخته قبلی شما محفوظ است`);
+  };
 
   const handleUndo = useCallback(() => {
     if (history.length === 0) return;
@@ -333,7 +474,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
   const getPointById = (id: string) => points.find((p) => p.id === id);
 
-  // Switch to a completely blank whiteboard ready for writing & smart drawing
+  // Switch current board to a completely blank whiteboard
   const openBlankWhiteboard = () => {
     pushHistory();
     setActivePreset(null);
@@ -347,6 +488,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     setSelectedPointIds([]);
     setBoardBg('white');
     setActiveTool('smart-pen');
+    setOpenFlyout(null);
     showSmartToast('✨ تخته سفید خالی آماده است — با قلم هوشمند هر شکلی بکشید تا خودکار منظم شود');
   };
 
@@ -362,11 +504,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     setSelectedPointIds([]);
     setSelectedItem(null);
     setActiveStepIndex(preset.steps.length - 1);
+    setIsPlayingSteps(false);
     setBoardBg(preset.id === 'preset-picks-theorem' ? 'dots' : 'grid');
     setActiveTool('select');
   };
 
-  // Toggle Fullscreen (delegates to App.tsx root Fullscreen so switching tabs never exits Fullscreen)
   const toggleFullscreen = () => {
     if (onToggleFullscreen) {
       onToggleFullscreen();
@@ -378,6 +520,162 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       document.exitFullscreen().catch(() => {});
     }
   };
+
+  // V2 Super Feature: 1-Click Axial Symmetry (Reflect selected shape or all points across vertical axis)
+  const handleReflectSelectedShape = useCallback(() => {
+    if (points.length === 0) {
+      showSmartToast('ابتدا یک شکل روی تخته رسم کنید تا بازتاب محوری آن ساخته شود');
+      return;
+    }
+    pushHistory();
+    let targetPtIds: string[] = [];
+    if (selectedItem?.kind === 'polygon') {
+      const poly = polygons.find((p) => p.id === selectedItem.id);
+      if (poly) targetPtIds = poly.vertices;
+    } else if (selectedItem?.kind === 'segment') {
+      const seg = segments.find((s) => s.id === selectedItem.id);
+      if (seg) targetPtIds = [seg.p1, seg.p2];
+    } else if (selectedItem?.kind === 'point') {
+      targetPtIds = [selectedItem.id];
+    } else if (polygons.length > 0) {
+      targetPtIds = polygons[polygons.length - 1].vertices;
+    } else {
+      targetPtIds = points.slice(-3).map((p) => p.id);
+    }
+
+    const sourcePts = targetPtIds.map(getPointById).filter(Boolean) as CanvasPoint[];
+    if (sourcePts.length === 0) return;
+
+    const maxX = Math.max(...sourcePts.map((p) => p.x));
+    const axisX = Math.min(620, Math.round(maxX + 55));
+    const axisA = { x: axisX, y: 40 };
+    const axisB = { x: axisX, y: 460 };
+
+    let updatedPts = [...points];
+    const axTop: CanvasPoint = {
+      id: `ax1-${Date.now()}`,
+      label: 'd₁',
+      x: axisA.x,
+      y: axisA.y,
+      color: '#D97706',
+    };
+    const axBot: CanvasPoint = {
+      id: `ax2-${Date.now()}`,
+      label: 'd₂',
+      x: axisB.x,
+      y: axisB.y,
+      color: '#D97706',
+    };
+    updatedPts.push(axTop, axBot);
+
+    const oldToReflected: Record<string, string> = {};
+    const raySegs: CanvasSegment[] = [];
+
+    for (const sp of sourcePts) {
+      const refCoords = reflectPointAcrossLine(sp, axisA, axisB);
+      const primeLabel = `${sp.label}'`;
+      const newId = `ref-${sp.id}-${Date.now()}`;
+      const refPt: CanvasPoint = {
+        id: newId,
+        label: primeLabel,
+        x: Math.round(refCoords.x),
+        y: Math.round(refCoords.y),
+        color: '#059669',
+      };
+      updatedPts.push(refPt);
+      oldToReflected[sp.id] = newId;
+      raySegs.push({
+        id: `sym-ray-${sp.id}-${Date.now()}`,
+        p1: sp.id,
+        p2: newId,
+        style: 'dashed',
+        color: '#94A3B8',
+      });
+    }
+
+    const newRefSegs: CanvasSegment[] = [
+      {
+        id: `axis-line-${Date.now()}`,
+        p1: axTop.id,
+        p2: axBot.id,
+        kind: 'line',
+        style: 'accent',
+        color: '#D97706',
+        label: 'محور تقارن',
+      },
+      ...raySegs,
+    ];
+
+    if (sourcePts.length >= 2) {
+      for (let i = 0; i < sourcePts.length; i++) {
+        if (sourcePts.length === 2 && i === 1) break;
+        const p1 = oldToReflected[sourcePts[i].id];
+        const p2 = oldToReflected[sourcePts[(i + 1) % sourcePts.length].id];
+        if (p1 && p2) {
+          newRefSegs.push({
+            id: `ref-edge-${Date.now()}-${i}`,
+            p1,
+            p2,
+            style: 'solid',
+            color: '#059669',
+          });
+        }
+      }
+    }
+
+    setPoints(updatedPts);
+    setSegments((prev) => [...prev, ...newRefSegs]);
+    if (sourcePts.length >= 3) {
+      const refVerts = sourcePts.map((p) => oldToReflected[p.id]).filter(Boolean);
+      setPolygons((prev) => [
+        ...prev,
+        {
+          id: `ref-poly-${Date.now()}`,
+          vertices: refVerts,
+          fill: 'rgba(5, 150, 105, 0.10)',
+          color: '#059669',
+        },
+      ]);
+    }
+    setOpenFlyout(null);
+    showSmartToast('🪞 تقارن محوری (بازتاب شکل) با نقاط قرینه ساخته شد');
+  }, [points, polygons, segments, selectedItem, pushHistory, showSmartToast]);
+
+  // V2 Super Feature: Rotate selected shape (or last polygon) by 90 degrees around its centroid
+  const handleRotateSelected90 = useCallback(() => {
+    if (points.length === 0) return;
+    pushHistory();
+    let targetIds: string[] = [];
+    if (selectedItem?.kind === 'polygon') {
+      const poly = polygons.find((p) => p.id === selectedItem.id);
+      if (poly) targetIds = poly.vertices;
+    } else if (selectedItem?.kind === 'segment') {
+      const seg = segments.find((s) => s.id === selectedItem.id);
+      if (seg) targetIds = [seg.p1, seg.p2];
+    } else if (polygons.length > 0) {
+      targetIds = polygons[polygons.length - 1].vertices;
+    } else {
+      targetIds = points.map((p) => p.id);
+    }
+
+    const targetPts = points.filter((p) => targetIds.includes(p.id));
+    if (targetPts.length === 0) return;
+
+    const cx = targetPts.reduce((acc, p) => acc + p.x, 0) / targetPts.length;
+    const cy = targetPts.reduce((acc, p) => acc + p.y, 0) / targetPts.length;
+    const center = { x: cx, y: cy };
+    const idSet = new Set(targetIds);
+
+    setPoints((prev) =>
+      prev.map((p) => {
+        if (!idSet.has(p.id)) return p;
+        const rot = rotatePointAroundCenter(p, center, 90);
+        return { ...p, x: Math.round(rot.x), y: Math.round(rot.y) };
+      })
+    );
+    setOpenFlyout(null);
+    showSmartToast('🔄 شکل حول مرکز ثقل خود ۹۰ درجه دوران یافت');
+  }, [points, polygons, segments, selectedItem, pushHistory, showSmartToast]);
 
   // Copy / Duplicate Selected Shape or Construction
   const handleDuplicateSelected = useCallback(() => {
@@ -535,7 +833,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     setSelectedItem(null);
   }, [selectedItem, pushHistory]);
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+C/D, Delete)
+  // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -559,6 +857,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         setSelectedPointIds([]);
         setDragDrawStart(null);
         setPendingNotePos(null);
+        setOpenFlyout(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -566,7 +865,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   }, [handleUndo, handleRedo, handleDuplicateSelected, handleDeleteSelected, selectedItem]);
 
   // Convert PointerEvent to exact SVG viewBox coordinates using SVG CTM inverse
-  // (Eliminates any aspect-ratio or letterboxing offset on widescreen / Fullscreen / Touch TVs)
   const getSvgCoords = (e: React.PointerEvent<SVGSVGElement>): Point2D => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
@@ -596,12 +894,10 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     };
   };
 
-  // Find existing point within snap radius
   const findNearestPoint = (coords: Point2D, radius = 16): CanvasPoint | undefined => {
     return points.find((p) => distance(p, coords) <= radius);
   };
 
-  // Erase any item near pointer
   const eraseNearPoint = (coords: Point2D) => {
     const nearPt = findNearestPoint(coords, 18);
     if (nearPt) {
@@ -819,9 +1115,9 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       }
 
       if (recognized.kind === 'polygon') {
-        const polyPts = recognized.vertices.map((v) => ensurePt(v));
-        const verts = polyPts.map((p) => p.id);
-        const newSegs: CanvasSegment[] = verts.map((v, i) => ({
+        const polyPts = recognized.vertices.map((v: Point2D) => ensurePt(v));
+        const verts = polyPts.map((p: CanvasPoint) => p.id);
+        const newSegs: CanvasSegment[] = verts.map((v: string, i: number) => ({
           id: `smart-poly-seg-${Date.now()}-${i}`,
           p1: v,
           p2: verts[(i + 1) % verts.length],
@@ -882,7 +1178,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     [points, activeColor, showSmartToast]
   );
 
-  // One-Tap Quick Geometric Shape Templates for instant classroom use
+  // One-Tap Quick Geometric Shape Templates
   const insertQuickTemplate = (
     template:
       | 'equilateral'
@@ -891,6 +1187,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       | 'hexagon'
       | 'circle-chord'
       | 'parallel-transversal'
+      | 'thales-triangle'
+      | 'circumcircle-triangle'
   ) => {
     pushHistory();
     let updatedPts = [...points];
@@ -907,9 +1205,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       return pt;
     };
 
-    // Slight offset if shapes already exist near center
-    const jitter = (polygons.length + circles.length) % 3 === 0 ? 0 : ((polygons.length % 3) - 1) * 30;
-    const cx = 380 + jitter;
+    const jitter = (polygons.length + circles.length) % 3 === 0 ? 0 : ((polygons.length % 3) - 1) * 28;
+    const cx = 360 + jitter;
     const cy = 250 + jitter;
 
     if (template === 'equilateral') {
@@ -934,11 +1231,10 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         ...prev,
         { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.09)', color: activeColor },
       ]);
-      showSmartToast('⚡ مثلث متساوی‌الاضلاع استاندارد درج شد');
+      showSmartToast('⚡ مثلث متساوی‌الاضلاع استاندارد (۶۰°) درج شد');
     } else if (template === 'right-triangle') {
-      // 3-4-5 right triangle (120px, 160px, 200px)
       const pA = addPt(cx - 70, cy - 60);
-      const pB = addPt(cx - 70, cy + 60); // 90 deg vertex
+      const pB = addPt(cx - 70, cy + 60);
       const pC = addPt(cx + 90, cy + 60);
       const verts = [pA.id, pB.id, pC.id];
       setPoints(updatedPts);
@@ -1037,23 +1333,68 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         { id: `tpl-tr-${Date.now()}`, p1: p5.id, p2: p6.id, kind: 'line', style: 'accent', label: 'خط مورب' },
       ]);
       showSmartToast('⚡ دو خط موازی و خط مورب درج شد');
+    } else if (template === 'thales-triangle') {
+      const pA = addPt(cx, cy - 110);
+      const pB = addPt(cx - 110, cy + 85);
+      const pC = addPt(cx + 120, cy + 85);
+      const pD = addPt(cx - 55, cy - 12);
+      const pE = addPt(cx + 60, cy - 12);
+      const verts = [pA.id, pB.id, pC.id];
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        { id: `tpl-th1-${Date.now()}`, p1: pA.id, p2: pB.id, style: 'solid', color: activeColor },
+        { id: `tpl-th2-${Date.now()}`, p1: pB.id, p2: pC.id, style: 'solid', color: activeColor, label: 'BC' },
+        { id: `tpl-th3-${Date.now()}`, p1: pC.id, p2: pA.id, style: 'solid', color: activeColor },
+        { id: `tpl-th4-${Date.now()}`, p1: pD.id, p2: pE.id, style: 'accent', label: 'DE || BC' },
+      ]);
+      setPolygons((prev) => [
+        ...prev,
+        { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.08)', color: activeColor },
+      ]);
+      showSmartToast('⚡ شکل استاندارد قضیه تالس (DE || BC) درج شد');
+    } else if (template === 'circumcircle-triangle') {
+      const pA = addPt(cx, cy - 95);
+      const pB = addPt(cx - 95, cy + 65);
+      const pC = addPt(cx + 105, cy + 55);
+      const verts = [pA.id, pB.id, pC.id];
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        ...verts.map((v, i) => ({
+          id: `tpl-cc-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 3],
+          style: 'solid' as const,
+          color: activeColor,
+        })),
+      ]);
+      setPolygons((prev) => [
+        ...prev,
+        { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.08)', color: activeColor },
+      ]);
+      setShowCircumcenter(true);
+      setShowIncenter(true);
+      showSmartToast('⚡ مثلث به همراه دایره محیطی (O) و دایره محاطی (P) درج شد');
     }
+    setOpenFlyout(null);
   };
 
-  // Pointer Down on SVG Canvas (Unified Mouse & Android Touch)
+  // Pointer Down on SVG Canvas
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    setOpenFlyout(null);
     if (draggingInstrument) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     const coords = getSvgCoords(e);
     const nearPt = findNearestPoint(coords, 16);
 
-    // 0. LASER POINTER TOOL (Temporary glowing classroom pointer)
+    // 0. LASER POINTER TOOL
     if (activeTool === 'laser') {
       setLaserTrail([{ x: coords.x, y: coords.y, t: Date.now() }]);
       return;
     }
 
-    // 1. SELECT & MOVE TOOL
+    // 1. SELECT & MOVE TOOL (Now includes full Polygon interior hit-testing!)
     if (activeTool === 'select') {
       if (nearPt) {
         pushHistory();
@@ -1061,7 +1402,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         setDraggingPointId(nearPt.id);
         return;
       }
-      // Check freehand strokes
       const hitSt = strokes.find((s) => s.points.some((p) => distance(p, coords) < 18));
       if (hitSt) {
         pushHistory();
@@ -1069,7 +1409,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         setDraggingWholeItem({ lastPt: coords });
         return;
       }
-      // Check notes
       const hitNote = notes.find((n) => Math.hypot(n.x - coords.x, n.y - coords.y) < 35);
       if (hitNote) {
         pushHistory();
@@ -1077,7 +1416,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         setDraggingWholeItem({ lastPt: coords });
         return;
       }
-      // Check segments (by distance to segment line)
       const hitSeg = segments.find((s) => {
         const p1 = getPointById(s.p1);
         const p2 = getPointById(s.p2);
@@ -1094,7 +1432,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         setDraggingWholeItem({ lastPt: coords });
         return;
       }
-      // Check circles (by rim or center)
       const hitCir = circles.find((c) => {
         const cPt = getPointById(c.center);
         const rPt = c.radiusPoint ? getPointById(c.radiusPoint) : null;
@@ -1108,12 +1445,23 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         setDraggingWholeItem({ lastPt: coords });
         return;
       }
+      // Hit-test inside polygons so clicking inside a triangle/rectangle drags the whole polygon!
+      const hitPoly = [...polygons].reverse().find((poly) => {
+        const polyPts = poly.vertices.map(getPointById).filter(Boolean) as CanvasPoint[];
+        return pointInPolygon(coords, polyPts);
+      });
+      if (hitPoly) {
+        pushHistory();
+        setSelectedItem({ kind: 'polygon', id: hitPoly.id });
+        setDraggingWholeItem({ lastPt: coords });
+        return;
+      }
 
       setSelectedItem(null);
       return;
     }
 
-    // 2. SMART PEN, PEN & HIGHLIGHTER (Blank Whiteboard Freehand + Smart Shape Recognition)
+    // 2. SMART PEN, PEN & HIGHLIGHTER
     if (activeTool === 'smart-pen' || activeTool === 'pen' || activeTool === 'highlighter') {
       pushHistory();
       setLiveSmartPreview(null);
@@ -1156,7 +1504,69 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       return;
     }
 
-    // 6. FAST DRAG-TO-DRAW TOOLS: segment, line, ray, compass, rect, triangle, regular-poly, perp-bisector
+    // 6. V2 CIRCLE TANGENTS FROM EXTERNAL POINT TOOL
+    if (activeTool === 'circle-tangent') {
+      if (circles.length === 0) {
+        showSmartToast('ابتدا یک دایره رسم کنید، سپس نقطه بیرونی را برای رسم خطوط مماس کلیک کنید');
+        return;
+      }
+      // Pick the nearest circle
+      const targetCir = circles[circles.length - 1];
+      const cPt = getPointById(targetCir.center);
+      const rPt = targetCir.radiusPoint ? getPointById(targetCir.radiusPoint) : null;
+      if (!cPt) return;
+      const r = targetCir.fixedRadius ?? (rPt ? distance(cPt, rPt) : 60);
+      const extPtCoords = nearPt ? { x: nearPt.x, y: nearPt.y } : coords;
+      const tangents = circleTangentsFromPoint(extPtCoords, cPt, r);
+      if (tangents.length === 0) {
+        showSmartToast('نقطه انتخابی داخل دایره است؛ لطفاً نقطه‌ای بیرون از دایره کلیک کنید');
+        return;
+      }
+      pushHistory();
+      let updatedPts = [...points];
+      const ensurePtLocal = (pt: Point2D, customLabel?: string): CanvasPoint => {
+        const existing = updatedPts.find((p) => distance(p, pt) <= 14);
+        if (existing) return existing;
+        const lbl = customLabel || getNextLabel(updatedPts);
+        const created: CanvasPoint = {
+          id: `${lbl}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+          label: lbl,
+          x: Math.round(pt.x),
+          y: Math.round(pt.y),
+          color: '#059669',
+        };
+        updatedPts.push(created);
+        return created;
+      };
+
+      const pExt = nearPt || ensurePtLocal(extPtCoords);
+      const newTangentSegs: CanvasSegment[] = [];
+      tangents.forEach((tCoords, idx) => {
+        const tPt = ensurePtLocal(tCoords, `T${idx + 1}`);
+        newTangentSegs.push({
+          id: `tan-line-${Date.now()}-${idx}`,
+          p1: pExt.id,
+          p2: tPt.id,
+          style: 'accent',
+          color: '#059669',
+          label: `مماس ${idx + 1}`,
+        });
+        newTangentSegs.push({
+          id: `tan-rad-${Date.now()}-${idx}`,
+          p1: cPt.id,
+          p2: tPt.id,
+          style: 'dashed',
+          color: '#0284C7',
+        });
+      });
+
+      setPoints(updatedPts);
+      setSegments((prev) => [...prev, ...newTangentSegs]);
+      showSmartToast(`✨ خطوط مماس بر دایره از نقطه ${pExt.label} و شعاع‌های عمود در نقاط تماس رسم شدند`);
+      return;
+    }
+
+    // 7. FAST DRAG-TO-DRAW TOOLS (including axial-symmetry line drag)
     if (
       activeTool === 'segment' ||
       activeTool === 'line' ||
@@ -1165,7 +1575,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       activeTool === 'rect' ||
       activeTool === 'triangle' ||
       activeTool === 'regular-poly' ||
-      activeTool === 'perp-bisector'
+      activeTool === 'perp-bisector' ||
+      activeTool === 'axial-symmetry'
     ) {
       const startPt = nearPt ? { x: nearPt.x, y: nearPt.y } : coords;
       setDragDrawStart({
@@ -1178,7 +1589,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       return;
     }
 
-    // 7. MULTI-POINT CONSTRUCTION TOOLS (angle-bisector, perp-line, parallel-line, polygon)
+    // 8. MULTI-POINT CONSTRUCTION TOOLS (angle-bisector, perp-line, parallel-line, polygon)
     let targetPoint = nearPt;
     let currentPts = points;
     if (!targetPoint) {
@@ -1320,6 +1731,10 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       setProtractorPos({ x: coords.x, y: coords.y });
       return;
     }
+    if (draggingInstrument === 'setsquare') {
+      setSetSquarePos((prev) => ({ ...prev, x: coords.x - 60, y: coords.y - 80 }));
+      return;
+    }
 
     if (draggingPointId) {
       setPoints((prev) =>
@@ -1369,6 +1784,14 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             )
           );
         }
+      } else if (selectedItem.kind === 'polygon') {
+        const poly = polygons.find((p) => p.id === selectedItem.id);
+        if (poly) {
+          const vSet = new Set(poly.vertices);
+          setPoints((prev) =>
+            prev.map((p) => (vSet.has(p.id) ? { ...p, x: p.x + dx, y: p.y + dy } : p))
+          );
+        }
       }
       setDraggingWholeItem({ lastPt: coords });
       return;
@@ -1378,13 +1801,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       const nextPts = [...activeFreehand.points, coords];
       setActiveFreehand((prev) => (prev ? { ...prev, points: nextPts } : null));
 
-      // Live Smart Recognition Preview while drawing with Smart Pen
       if (activeTool === 'smart-pen' && nextPts.length >= 8) {
         const candidate = recognizeSmartStroke(nextPts);
         setLiveSmartPreview(candidate.kind !== 'freehand' ? candidate : null);
       }
 
-      // Hold-to-Snap (430ms pause at end of stroke converts freehand in-place)
       if (holdSnapTimerRef.current) {
         window.clearTimeout(holdSnapTimerRef.current);
       }
@@ -1447,9 +1868,9 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       } else if (
         activeTool === 'segment' ||
         activeTool === 'line' ||
-        activeTool === 'ray'
+        activeTool === 'ray' ||
+        activeTool === 'axial-symmetry'
       ) {
-        // Subtle 1.5° angle snap so the endpoint stays glued directly under the cursor tip
         const snapLine = snapSmartLineEndpoint(dragDrawStart.startPt, coords, 1.5);
         setDragDrawStart((prev) =>
           prev
@@ -1510,13 +1931,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       const dragDist = distance(startPt, currentPt);
       setDragDrawStart(null);
 
-      // Ignore accidental tiny taps (< 10px) unless snapping to a second point
       if (dragDist < 10) return;
 
       pushHistory();
       let updatedPts = [...points];
 
-      // Ensure start point exists when needed
       const ensurePoint = (pt: Point2D, existingId?: string): CanvasPoint => {
         if (existingId) {
           const found = updatedPts.find((p) => p.id === existingId);
@@ -1535,6 +1954,80 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         updatedPts.push(created);
         return created;
       };
+
+      if (activeTool === 'axial-symmetry') {
+        // Reflect existing polygon or points across the user-drawn axis line (startPt -> currentPt)
+        const targetVerts =
+          polygons.length > 0
+            ? polygons[polygons.length - 1].vertices
+            : points.slice(-3).map((p) => p.id);
+        const sourcePts = targetVerts.map(getPointById).filter(Boolean) as CanvasPoint[];
+        const ax1 = ensurePoint(startPt, startPointId);
+        const ax2 = ensurePoint(currentPt);
+        const oldToRef: Record<string, string> = {};
+        const addedSegs: CanvasSegment[] = [
+          {
+            id: `sym-axis-${Date.now()}`,
+            p1: ax1.id,
+            p2: ax2.id,
+            kind: 'line',
+            style: 'accent',
+            color: '#D97706',
+            label: 'محور تقارن',
+          },
+        ];
+
+        for (const sp of sourcePts) {
+          if (sp.id === ax1.id || sp.id === ax2.id) continue;
+          const rCoords = reflectPointAcrossLine(sp, ax1, ax2);
+          const rId = `ref-${sp.id}-${Date.now()}`;
+          const rPt: CanvasPoint = {
+            id: rId,
+            label: `${sp.label}'`,
+            x: Math.round(rCoords.x),
+            y: Math.round(rCoords.y),
+            color: '#059669',
+          };
+          updatedPts.push(rPt);
+          oldToRef[sp.id] = rId;
+          addedSegs.push({
+            id: `sym-ray-${sp.id}-${Date.now()}`,
+            p1: sp.id,
+            p2: rId,
+            style: 'dashed',
+            color: '#94A3B8',
+          });
+        }
+
+        const refIds = sourcePts.map((p) => oldToRef[p.id]).filter(Boolean);
+        if (refIds.length >= 2) {
+          for (let i = 0; i < refIds.length; i++) {
+            if (refIds.length === 2 && i === 1) break;
+            addedSegs.push({
+              id: `sym-edge-${Date.now()}-${i}`,
+              p1: refIds[i],
+              p2: refIds[(i + 1) % refIds.length],
+              style: 'solid',
+              color: '#059669',
+            });
+          }
+        }
+        setPoints(updatedPts);
+        setSegments((prev) => [...prev, ...addedSegs]);
+        if (refIds.length >= 3) {
+          setPolygons((prev) => [
+            ...prev,
+            {
+              id: `sym-poly-${Date.now()}`,
+              vertices: refIds,
+              fill: 'rgba(5, 150, 105, 0.10)',
+              color: '#059669',
+            },
+          ]);
+        }
+        showSmartToast('🪞 بازتاب شکل نسبت به محور تقارن رسم‌شده ایجاد شد');
+        return;
+      }
 
       if (activeTool === 'segment' || activeTool === 'line' || activeTool === 'ray') {
         const p1 = ensurePoint(startPt, startPointId);
@@ -1691,7 +2184,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
       const a = document.createElement('a');
-      a.download = `hendese-whiteboard-${Date.now()}.png`;
+      a.download = `hendese-v2-whiteboard-${Date.now()}.png`;
       a.href = canvas.toDataURL('image/png');
       a.click();
     };
@@ -1700,7 +2193,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
   const exportConstructionJson = () => {
     const payload = {
-      title: activePreset?.title || 'تخته سفید هندسه‌نگار',
+      title: activePreset?.title || 'ابر ترسیم هندسه - نسخه ۲',
       exportedAt: new Date().toISOString(),
       points,
       segments,
@@ -1713,7 +2206,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `hendese-${Date.now()}.json`;
+    a.download = `hendese-v2-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1760,124 +2253,126 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const thalesStats = computeThalesTheorem(thalesAd, thalesDb, thalesAe, thalesBc);
   const rtStats = computeRightTriangleMetrics(rtSideB, rtSideC);
 
+  // Dynamic SVG viewBox centered at (380, 250) according to canvasZoom
+  const vbWidth = 760 / canvasZoom;
+  const vbHeight = 500 / canvasZoom;
+  const vbX = 380 - vbWidth / 2;
+  const vbY = 250 - vbHeight / 2;
+
   const toolHelperText: Record<Tool2D, string> = {
-    select: 'روی هر نقطه، خط، دایره یا دست‌خط کلیک کنید تا انتخاب، جابه‌جا یا کپی شود.',
+    select: 'روی هر نقطه، خط، دایره یا داخل چندضلعی کلیک کنید و بکشید.',
     'smart-pen':
-      'قلم هوشمند پیشرفته ✨ — دایره، خط، مثلث (متساوی‌الاضلاع/قائم‌الزاویه)، مربع، چندضلعی یا زاویه ۹۰° بکشید یا در انتهای رسم مکث کنید؛ خط‌خطی کردن روی شکل آن را پاک می‌کند!',
-    pen: 'قلم آزاد تخته سفید (با مکث کوتاه در انتهای خط، شکل خودکار منظم می‌شود).',
+      'دایره، خط، مثلث، مربع، چندضلعی یا زاویه ۹۰° بکشید یا در انتهای خط مکث کنید؛ خط‌خطی کردن شکل را پاک می‌کند!',
+    pen: 'روی تخته بنویسید یا رسم کنید (با مکث کوتاه در انتهای خط، شکل خودکار منظم می‌شود).',
     highlighter: 'ماژیک هایلایت فعال است — روی زوایا یا فرمول‌ها بکشید.',
-    laser: 'لیزر تدریس فعال است 🔴 — برای اشاره موقت و توضیح قضیه روی تخته بکشید.',
-    eraser: 'پاک‌کن فعال است — روی هر خط، شکل یا نقطه بکشید تا پاک شود.',
+    laser: 'برای اشاره موقت و توضیح قضیه روی تخته بکشید.',
+    eraser: 'روی هر خط، شکل یا نقطه بکشید تا پاک شود.',
     point: 'روی هر جای تخته کلیک کنید تا یک نقطه نام‌گذاری‌شده ایجاد شود.',
-    segment: 'روی تخته بکشید (Drag) تا پاره‌خط دقیقاً در محل نوک قلم رسم شود.',
+    segment: 'روی تخته بکشید تا پاره‌خط دقیقاً زیر نوک قلم رسم شود.',
     line: 'روی تخته بکشید تا خط راست دوطرفه بی‌نهایت رسم شود.',
     ray: 'از نقطه مبدأ بکشید تا نیم‌خط رسم شود.',
-    compass: 'از مرکز دایره به بیرون بکشید — پرگار هوشمند شعاع، قطر، محیط و مساحت زنده را نمایش می‌دهد.',
-    rect: 'روی تخته بکشید تا مستطیل یا مربع چهارضلعی رسم شود.',
+    compass: 'از مرکز دایره به بیرون بکشید تا شعاع، قطر، محیط و مساحت زنده نمایش داده شود.',
+    rect: 'روی تخته بکشید تا چهارضلعی رسم شود.',
     triangle: 'روی تخته بکشید تا مثلث سه رأسی قابل تغییر شکل رسم شود.',
     'regular-poly': `از مرکز به بیرون بکشید تا ${polySides}ضلعی منتظم رسم شود.`,
     'perp-bisector': 'روی تخته بکشید تا پاره‌خط و عمودمنصف آن با کمان‌های پرگار رسم شوند.',
     'angle-bisector': 'سه نقطه (ضلع اول، رأس زاویه، ضلع دوم) را کلیک کنید تا نیمساز رسم شود.',
-    'perp-line': 'ابتدا دو نقطه از خط پایه و سپس نقطه سوم را کلیک کنید تا خط عمود رسم شود.',
-    'parallel-line': 'ابتدا دو نقطه از خط پایه و سپس نقطه سوم را کلیک کنید تا خط موازی رسم شود.',
-    polygon: 'نقاط رئوس را متوالی کلیک کنید و در پایان روی نقطه اول کلیک کنید تا بسته شود.',
+    'perp-line': 'ابتدا دو نقطه از خط پایه و سپس نقطه سوم را کلیک کنید.',
+    'parallel-line': 'ابتدا دو نقطه از خط پایه و سپس نقطه سوم را کلیک کنید.',
+    'circle-tangent': 'روی هر نقطه بیرون از دایره کلیک کنید تا دو خط مماس و شعاع‌های عمود رسم شوند.',
+    'axial-symmetry': 'یک خط روی تخته بکشید تا شکل نسبت به آن خط قرینه و بازتاب شود.',
+    polygon: 'نقاط رئوس را متوالی کلیک کنید و در پایان روی نقطه اول کلیک کنید.',
     text: 'روی هر نقطه از تخته کلیک کنید تا متن یا فرمول هندسی درج شود.',
+  };
+
+  const activeToolLabel: Record<Tool2D, string> = {
+    select: 'انتخاب و حرکت',
+    'smart-pen': 'قلم هوشمند ✨',
+    pen: 'قلم آزاد',
+    highlighter: 'ماژیک',
+    laser: 'لیزر تدریس 🔴',
+    eraser: 'پاک‌کن',
+    point: 'نقطه',
+    segment: 'پاره‌خط',
+    line: 'خط دوطرفه',
+    ray: 'نیم‌خط',
+    compass: 'پرگار و دایره',
+    rect: 'مستطیل و مربع',
+    triangle: 'مثلث',
+    'regular-poly': `${polySides}ضلعی منتظم`,
+    'perp-bisector': 'عمودمنصف',
+    'angle-bisector': 'نیمساز زاویه',
+    'perp-line': 'خط عمود',
+    'parallel-line': 'خط موازی',
+    'circle-tangent': 'مماس بر دایره',
+    'axial-symmetry': 'تقارن محوری 🪞',
+    polygon: 'چندضلعی دلخواه',
+    text: 'متن و فرمول',
   };
 
   return (
     <div
       ref={containerRef}
-      className="flex flex-col lg:flex-row gap-3 p-2.5 max-w-[1680px] mx-auto overflow-y-auto h-[calc(100vh-3.5rem)]"
+      className="flex flex-col lg:flex-row gap-2.5 p-2 max-w-[1720px] mx-auto overflow-hidden h-[calc(100vh-3rem)]"
     >
       {/* Main Interactive Whiteboard & Drafting Canvas Column */}
-      <div className="flex-1 flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs min-w-0">
-        {/* Top Row 1: Fast Drawing & Geometric Construction Tools (Flex-Wrap, Zero Horizontal Scrollbar) */}
-        <div className="p-2 bg-slate-50 border-b border-slate-200">
-          <div
-            className="flex items-center gap-1 flex-wrap"
-            role="toolbar"
-            aria-label="ابزارهای تخته سفید و ترسیم هندسی"
-          >
-            {/* Blank Whiteboard Quick Reset Button */}
+      <div className="flex-1 flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs min-w-0 h-full">
+        {/* SINGLE ULTRA-SLIM TOP CONTROL BAR (Takes minimal height so canvas is huge!) */}
+        <div className="h-11 px-2.5 bg-white border-b border-slate-200 flex items-center justify-between gap-2 shrink-0 overflow-x-auto no-scrollbar">
+          {/* Right Group (RTL): Blank Board + Multi-Slide Tabs + Undo/Redo + Copy/Delete */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               onClick={openBlankWhiteboard}
-              className="px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 bg-emerald-600 text-white hover:bg-emerald-700 transition-colors cursor-pointer whitespace-nowrap shadow-2xs shrink-0"
-              title="باز کردن یک تخته سفید کاملاً خالی برای نوشتن و ترسیم آزاد"
+              className="px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 bg-emerald-600 text-white hover:bg-emerald-700 transition-colors cursor-pointer whitespace-nowrap shadow-2xs"
+              title="پاک کردن و باز کردن تخته سفید خالی"
             >
               <FilePlus2 className="w-3.5 h-3.5" />
               <span>تخته سفید خالی</span>
             </button>
 
-            <div className="h-5 w-px bg-slate-300 mx-0.5 shrink-0" />
-
-            {(
-              [
-                { id: 'select', label: 'انتخاب و حرکت', icon: MousePointer },
-                { id: 'smart-pen', label: 'قلم هوشمند ✨', icon: Wand2 },
-                { id: 'pen', label: 'قلم آزاد', icon: PenTool },
-                { id: 'highlighter', label: 'ماژیک', icon: Highlighter },
-                { id: 'laser', label: 'لیزر تدریس 🔴', icon: Sparkles },
-                { id: 'eraser', label: 'پاک‌کن', icon: Eraser },
-                { id: 'compass', label: 'دایره هوشمند', icon: Compass },
-                { id: 'segment', label: 'پاره‌خط', icon: Minus },
-                { id: 'line', label: 'خط دوطرفه', icon: MoveHorizontal },
-                { id: 'ray', label: 'نیم‌خط', icon: MoveUpRight },
-                { id: 'rect', label: 'مستطیل', icon: Square },
-                { id: 'triangle', label: 'مثلث', icon: Triangle },
-                { id: 'regular-poly', label: 'چندضلعی منتظم', icon: Pentagon },
-                { id: 'point', label: 'نقطه', icon: CircleDot },
-                { id: 'perp-bisector', label: 'عمودمنصف', icon: Scissors },
-                { id: 'angle-bisector', label: 'نیمساز', icon: GitBranch },
-                { id: 'perp-line', label: 'خط عمود', icon: CornerRightDown },
-                { id: 'parallel-line', label: 'خط موازی', icon: Equal },
-                { id: 'text', label: 'متن/فرمول', icon: Type },
-              ] as const
-            ).map((tool) => {
-              const Icon = tool.icon;
-              const isActive = activeTool === tool.id;
-              const isSmartPen = tool.id === 'smart-pen';
-              return (
+            {/* Multi-Slide Whiteboard Switcher */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+              {slides.map((sl, idx) => (
                 <button
-                  key={tool.id}
-                  onClick={() => {
-                    setActiveTool(tool.id);
-                    setSelectedPointIds([]);
-                  }}
-                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    isActive
-                      ? 'bg-sky-600 text-white shadow-2xs'
-                      : isSmartPen
-                      ? 'bg-sky-50 text-sky-800 border border-sky-300 hover:bg-sky-100'
-                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                  key={sl.id}
+                  onClick={() => switchToSlide(idx)}
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                    idx === activeSlideIndex
+                      ? 'bg-white text-sky-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span>{tool.label}</span>
+                  {sl.title}
                 </button>
-              );
-            })}
-          </div>
-        </div>
+              ))}
+              <button
+                onClick={addNewWhiteboardSlide}
+                className="px-1.5 py-0.5 rounded-md text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 flex items-center gap-0.5 cursor-pointer"
+                title="افزودن یک صفحه تخته سفید جدید بدون پاک شدن تخته فعلی"
+              >
+                <Plus className="w-3 h-3" />
+                <span className="hidden sm:inline">تخته جدید</span>
+              </button>
+            </div>
 
-        {/* Top Row 2: Edit Actions (Copy, Delete, Undo/Redo), Colors, Background Mode, Fullscreen & Sidebar Toggle */}
-        <div className="px-3 py-1.5 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
-          {/* Edit & Copy Actions */}
-          <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="h-4 w-px bg-slate-200 mx-0.5" />
+
             <button
               onClick={handleUndo}
               disabled={history.length === 0}
-              className="px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-100 disabled:opacity-35 text-slate-700 flex items-center gap-1 cursor-pointer"
+              className="p-1.5 rounded-md border border-slate-200 hover:bg-slate-100 disabled:opacity-35 text-slate-700 cursor-pointer"
               title="بازگشت (Ctrl+Z)"
+              aria-label="بازگشت"
             >
               <Undo2 className="w-3.5 h-3.5" />
-              <span>بازگشت</span>
             </button>
 
             <button
               onClick={handleRedo}
               disabled={redoStack.length === 0}
-              className="px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-100 disabled:opacity-35 text-slate-700 flex items-center gap-1 cursor-pointer"
+              className="p-1.5 rounded-md border border-slate-200 hover:bg-slate-100 disabled:opacity-35 text-slate-700 cursor-pointer"
               title="انجام مجدد (Ctrl+Y)"
+              aria-label="انجام مجدد"
             >
               <Redo2 className="w-3.5 h-3.5" />
             </button>
@@ -1885,26 +2380,26 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             <button
               onClick={handleDuplicateSelected}
               disabled={!selectedItem}
-              className="px-2.5 py-1 rounded-md border border-sky-200 bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-sky-800 font-semibold flex items-center gap-1 cursor-pointer"
-              title="کپی و تکثیر شکل انتخاب‌شده (Ctrl+D)"
+              className="px-2 py-1 rounded-md border border-sky-200 bg-sky-50 hover:bg-sky-100 disabled:opacity-35 text-sky-800 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+              title="کپی شکل انتخاب‌شده (Ctrl+D)"
             >
               <Copy className="w-3.5 h-3.5" />
-              <span>کپی شکل</span>
+              <span className="hidden md:inline">کپی</span>
             </button>
 
             <button
               onClick={handleDeleteSelected}
               disabled={!selectedItem}
-              className="px-2.5 py-1 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:opacity-40 text-rose-700 font-semibold flex items-center gap-1 cursor-pointer"
+              className="px-2 py-1 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:opacity-35 text-rose-700 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
               title="حذف شکل انتخاب‌شده (Delete)"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>حذف</span>
+              <span className="hidden md:inline">حذف</span>
             </button>
 
             <div className="h-4 w-px bg-slate-200 mx-0.5" />
 
-            {/* Color Palette */}
+            {/* Color Swatches */}
             <div className="flex items-center gap-1">
               {['#0284C7', '#0F172A', '#D97706', '#059669', '#DC2626', '#7C3AED'].map((c) => (
                 <button
@@ -1924,44 +2419,31 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                         setStrokes((prev) =>
                           prev.map((st) => (st.id === selectedItem.id ? { ...st, color: c } : st))
                         );
+                      } else if (selectedItem.kind === 'polygon') {
+                        setPolygons((prev) =>
+                          prev.map((pl) => (pl.id === selectedItem.id ? { ...pl, color: c } : pl))
+                        );
                       }
                     }
                   }}
-                  className={`w-4.5 h-4.5 rounded-full border flex items-center justify-center cursor-pointer ${
+                  className={`w-4 h-4 rounded-full border flex items-center justify-center cursor-pointer ${
                     activeColor === c ? 'border-slate-900 scale-110' : 'border-transparent'
                   }`}
                   style={{ backgroundColor: c }}
+                  aria-label={`رنگ ${c}`}
                 >
                   {activeColor === c && <Check className="w-2.5 h-2.5 text-white" />}
                 </button>
               ))}
             </div>
-
-            {activeTool === 'regular-poly' && (
-              <div className="flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded-md">
-                <span>تعداد اضلاع:</span>
-                {[3, 4, 5, 6, 8].map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => setPolySides(n)}
-                    className={`px-1.5 py-0.5 rounded font-mono-num font-bold cursor-pointer ${
-                      polySides === n ? 'bg-sky-600 text-white' : 'text-slate-700'
-                    }`}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
-          {/* Background Switcher, Physical Instruments, Fullscreen & Sidebar Toggle */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {/* Board Background Switcher */}
+          {/* Left Group (RTL): Background Switcher + Zoom + Fullscreen + Inspector Drawer Toggle */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
               {(
                 [
-                  { id: 'white', label: 'تخته سفید' },
+                  { id: 'white', label: 'سفید' },
                   { id: 'grid', label: 'شطرنجی' },
                   { id: 'dots', label: 'شبکه پیک' },
                   { id: 'axes', label: 'مختصات' },
@@ -1970,7 +2452,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 <button
                   key={bg.id}
                   onClick={() => setBoardBg(bg.id)}
-                  className={`px-2 py-1 rounded-md text-[11px] font-semibold cursor-pointer ${
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold cursor-pointer ${
                     boardBg === bg.id
                       ? 'bg-white text-sky-700 shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -1988,108 +2470,567 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                   ? 'bg-sky-50 border-sky-300 text-sky-800'
                   : 'bg-white border-slate-200 text-slate-600'
               }`}
-              title="چسبیدن خودکار نقاط به شبکه (Snap to Grid)"
+              title="چسبیدن خودکار نقاط به شبکه"
             >
               <Grid className="w-3.5 h-3.5 inline ml-1" />
-              <span>جذب به شبکه</span>
+              <span className="hidden xl:inline">جذب شبکه</span>
             </button>
 
-            <button
-              onClick={() => setShowRuler((v) => !v)}
-              className={`px-2 py-1 rounded-md border text-[11px] font-semibold cursor-pointer ${
-                showRuler
-                  ? 'bg-amber-500 text-white border-amber-500'
-                  : 'bg-white border-slate-200 text-slate-700'
-              }`}
-            >
-              <Ruler className="w-3.5 h-3.5 inline ml-1" />
-              <span>خط‌کش</span>
-            </button>
-
-            <button
-              onClick={() => setShowProtractor((v) => !v)}
-              className={`px-2 py-1 rounded-md border text-[11px] font-semibold cursor-pointer ${
-                showProtractor
-                  ? 'bg-amber-500 text-white border-amber-500'
-                  : 'bg-white border-slate-200 text-slate-700'
-              }`}
-            >
-              <span>نقاله</span>
-            </button>
+            {/* Canvas Zoom Controls */}
+            <div className="flex items-center bg-slate-100 rounded-lg border border-slate-200 p-0.5">
+              <button
+                onClick={() => setCanvasZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))}
+                className="p-1 text-slate-700 hover:text-sky-700 cursor-pointer"
+                title="کوچک‌نمایی تخته"
+                aria-label="کوچک‌نمایی تخته"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setCanvasZoom(1)}
+                className="px-1.5 text-[10px] font-mono-num font-bold text-slate-700 hover:text-sky-700 cursor-pointer"
+                title="بازنشانی بزرگ‌نمایی به ۱۰۰٪"
+              >
+                {Math.round(canvasZoom * 100)}%
+              </button>
+              <button
+                onClick={() => setCanvasZoom((z) => Math.min(2.2, +(z + 0.15).toFixed(2)))}
+                className="p-1 text-slate-700 hover:text-sky-700 cursor-pointer"
+                title="بزرگ‌نمایی تخته"
+                aria-label="بزرگ‌نمایی تخته"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
             <button
               onClick={toggleFullscreen}
-              className="px-2.5 py-1 rounded-md border border-slate-200 hover:bg-slate-100 text-slate-800 font-semibold flex items-center gap-1 cursor-pointer"
-              title="حالت تمام‌صفحه پایدار در کل برنامه"
+              className="px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-100 text-slate-800 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+              title="حالت تمام‌صفحه پایدار"
             >
               {isFullscreen ? (
                 <Minimize2 className="w-3.5 h-3.5 text-sky-600" />
               ) : (
                 <Maximize2 className="w-3.5 h-3.5 text-sky-600" />
               )}
-              <span>{isFullscreen ? 'خروج از تمام‌صفحه' : 'تمام‌صفحه'}</span>
+              <span className="hidden sm:inline">{isFullscreen ? 'خروج' : 'تمام‌صفحه'}</span>
             </button>
 
             <button
               onClick={() => setSidebarOpen((v) => !v)}
-              className="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-slate-800 text-white font-semibold flex items-center gap-1 cursor-pointer"
-              title={sidebarOpen ? 'بستن نوار کناری برای بزرگ شدن تخته' : 'باز کردن نوار کناری'}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1 cursor-pointer ${
+                sidebarOpen
+                  ? 'bg-sky-600 text-white'
+                  : 'bg-slate-900 hover:bg-slate-800 text-white'
+              }`}
+              title={sidebarOpen ? 'بستن پنل کتاب و تحلیل' : 'باز کردن پنل درس‌ها و تحلیل مثلث'}
             >
               {sidebarOpen ? (
                 <PanelLeftClose className="w-3.5 h-3.5" />
               ) : (
                 <PanelLeftOpen className="w-3.5 h-3.5" />
               )}
-              <span>{sidebarOpen ? 'بستن پنل کناری' : 'پنل ابزار و کتاب'}</span>
+              <span>{sidebarOpen ? 'بستن پنل درس' : 'پنل کتاب و قضایا'}</span>
             </button>
           </div>
         </div>
 
-        {/* One-Click Smart Shape Templates Strip (Instant 1-Tap Classroom Shapes) */}
-        <div className="px-3 py-1 bg-slate-50/90 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap text-[11px]">
-          <div className="flex items-center gap-1 flex-wrap">
-            <span className="font-bold text-slate-600 ml-1">⚡ درج سریع شکل استاندارد:</span>
-            <button
-              onClick={() => insertQuickTemplate('equilateral')}
-              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
-            >
-              △ متساوی‌الاضلاع (۶۰°)
-            </button>
-            <button
-              onClick={() => insertQuickTemplate('right-triangle')}
-              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
-            >
-              ∟ مثلث قائم‌الزاویه (۳-۴-۵)
-            </button>
-            <button
-              onClick={() => insertQuickTemplate('square')}
-              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
-            >
-              □ مربع منتظم
-            </button>
-            <button
-              onClick={() => insertQuickTemplate('hexagon')}
-              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
-            >
-              ⬡ شش‌ضلعی منتظم
-            </button>
-            <button
-              onClick={() => insertQuickTemplate('circle-chord')}
-              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
-            >
-              ⊙ دایره و عمود بر وتر
-            </button>
-            <button
-              onClick={() => insertQuickTemplate('parallel-transversal')}
-              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
-            >
-              ∥ خطوط موازی و مورب
-            </button>
+        {/* Interactive SVG Whiteboard & Drafting Canvas + RIGHT-SIDE VERTICAL TOOL DOCK */}
+        <div
+          className={`relative flex-1 w-full min-h-[460px] select-none overflow-hidden ${
+            boardBg === 'grid' || boardBg === 'axes' ? 'drafting-grid' : 'bg-white'
+          }`}
+        >
+          {/* SLEEK RIGHT-SIDE VERTICAL TOOL DOCK (Replaces cluttered multi-row header!) */}
+          <div
+            className="absolute right-2.5 top-2.5 z-20 flex items-start gap-2"
+            role="toolbar"
+            aria-label="نوار ابزار عمودی ترسیم هندسه"
+          >
+            {rightDockCollapsed ? (
+              <button
+                onClick={() => setRightDockCollapsed(false)}
+                className="bg-slate-900 text-white px-2.5 py-2 rounded-xl shadow-lg border border-slate-700 flex items-center gap-1.5 text-xs font-bold hover:bg-slate-800 cursor-pointer"
+                title="باز کردن جعبه ابزار ترسیم"
+              >
+                <ChevronLeft className="w-4 h-4 text-sky-400" />
+                <span>ابزارها ({activeToolLabel[activeTool]})</span>
+              </button>
+            ) : (
+              <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl shadow-lg p-1.5 flex flex-col gap-1 w-[136px]">
+                {/* Collapse Dock Header */}
+                <div className="flex items-center justify-between px-1.5 py-0.5 border-b border-slate-100">
+                  <span className="text-[10px] font-bold text-slate-500">جعبه ابزار</span>
+                  <button
+                    onClick={() => {
+                      setRightDockCollapsed(true);
+                      setOpenFlyout(null);
+                    }}
+                    className="p-0.5 rounded hover:bg-slate-100 text-slate-500 cursor-pointer"
+                    title="جمع کردن نوار ابزار برای فضای بیشتر"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* 1. Select & Move */}
+                <button
+                  onClick={() => {
+                    setActiveTool('select');
+                    setSelectedPointIds([]);
+                    setOpenFlyout(null);
+                  }}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeTool === 'select'
+                      ? 'bg-sky-600 text-white shadow-xs'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <MousePointer className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">انتخاب و حرکت</span>
+                </button>
+
+                {/* 2. Smart Pen v2 */}
+                <button
+                  onClick={() => {
+                    setActiveTool('smart-pen');
+                    setSelectedPointIds([]);
+                    setOpenFlyout(null);
+                  }}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeTool === 'smart-pen'
+                      ? 'bg-sky-600 text-white shadow-xs'
+                      : 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
+                  }`}
+                >
+                  <Wand2 className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">قلم هوشمند ✨</span>
+                </button>
+
+                {/* 3. Freehand Pen / Highlighter / Laser / Text Flyout */}
+                <button
+                  onClick={() => setOpenFlyout((f) => (f === 'pens' ? null : 'pens'))}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center justify-between transition-all cursor-pointer ${
+                    ['pen', 'highlighter', 'laser', 'text'].includes(activeTool) ||
+                    openFlyout === 'pens'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <PenTool className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">قلم و لیزر</span>
+                  </span>
+                  <ChevronLeft className="w-3 h-3 shrink-0 opacity-70" />
+                </button>
+
+                {/* 4. Direct Compass Circle */}
+                <button
+                  onClick={() => {
+                    setActiveTool('compass');
+                    setSelectedPointIds([]);
+                    setOpenFlyout(null);
+                  }}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeTool === 'compass'
+                      ? 'bg-sky-600 text-white shadow-xs'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Compass className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">دایره هوشمند</span>
+                </button>
+
+                {/* 5. Direct Segment */}
+                <button
+                  onClick={() => {
+                    setActiveTool('segment');
+                    setSelectedPointIds([]);
+                    setOpenFlyout(null);
+                  }}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeTool === 'segment'
+                      ? 'bg-sky-600 text-white shadow-xs'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Minus className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">پاره‌خط</span>
+                </button>
+
+                {/* 6. Shapes & Lines Category Flyout */}
+                <button
+                  onClick={() => setOpenFlyout((f) => (f === 'shapes' ? null : 'shapes'))}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center justify-between transition-all cursor-pointer ${
+                    ['point', 'line', 'ray', 'triangle', 'rect', 'regular-poly', 'polygon'].includes(
+                      activeTool
+                    ) || openFlyout === 'shapes'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Shapes className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">اشکال هندسی</span>
+                  </span>
+                  <ChevronLeft className="w-3 h-3 shrink-0 opacity-70" />
+                </button>
+
+                {/* 7. Advanced Constructions & Symmetry Flyout */}
+                <button
+                  onClick={() =>
+                    setOpenFlyout((f) => (f === 'constructions' ? null : 'constructions'))
+                  }
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center justify-between transition-all cursor-pointer ${
+                    [
+                      'perp-bisector',
+                      'angle-bisector',
+                      'perp-line',
+                      'parallel-line',
+                      'circle-tangent',
+                      'axial-symmetry',
+                    ].includes(activeTool) || openFlyout === 'constructions'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Wrench className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">ترسیم و تقارن</span>
+                  </span>
+                  <ChevronLeft className="w-3 h-3 shrink-0 opacity-70" />
+                </button>
+
+                {/* 8. Instant 1-Click Templates Flyout */}
+                <button
+                  onClick={() => setOpenFlyout((f) => (f === 'templates' ? null : 'templates'))}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center justify-between transition-all cursor-pointer ${
+                    openFlyout === 'templates'
+                      ? 'bg-amber-500 text-white'
+                      : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Zap className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                    <span className="truncate">اشکال آماده</span>
+                  </span>
+                  <ChevronLeft className="w-3 h-3 shrink-0 opacity-70" />
+                </button>
+
+                {/* 9. Physical Instruments & Angles Flyout */}
+                <button
+                  onClick={() =>
+                    setOpenFlyout((f) => (f === 'instruments' ? null : 'instruments'))
+                  }
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center justify-between transition-all cursor-pointer ${
+                    openFlyout === 'instruments' || showRuler || showProtractor || showSetSquare
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Ruler className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">خط‌کش و گونیا</span>
+                  </span>
+                  <ChevronLeft className="w-3 h-3 shrink-0 opacity-70" />
+                </button>
+
+                {/* 10. Eraser */}
+                <button
+                  onClick={() => {
+                    setActiveTool('eraser');
+                    setSelectedPointIds([]);
+                    setOpenFlyout(null);
+                  }}
+                  className={`w-full px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeTool === 'eraser'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'text-rose-700 hover:bg-rose-50'
+                  }`}
+                >
+                  <Eraser className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">پاک‌کن</span>
+                </button>
+              </div>
+            )}
+
+            {/* FLYOUT SUB-MENUS (Open cleanly beside the right dock, auto-close on selection) */}
+            {openFlyout === 'pens' && (
+              <div className="bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl p-2.5 w-48 flex flex-col gap-1.5 animate-in fade-in">
+                <div className="text-[11px] font-bold text-slate-500 px-1 pb-1 border-b border-slate-100">
+                  ابزارهای نوشتن و اشاره
+                </div>
+                {(
+                  [
+                    { id: 'pen', label: 'قلم آزاد تخته سفید', icon: PenTool },
+                    { id: 'highlighter', label: 'ماژیک هایلایت', icon: Highlighter },
+                    { id: 'laser', label: 'لیزر تدریس 🔴', icon: Sparkles },
+                    { id: 'text', label: 'درج متن و فرمول (T)', icon: Type },
+                  ] as const
+                ).map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActiveTool(item.id);
+                        setOpenFlyout(null);
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer ${
+                        activeTool === item.id
+                          ? 'bg-sky-600 text-white'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+                <div className="pt-1 border-t border-slate-100 flex items-center justify-between px-1 text-[11px]">
+                  <span className="text-slate-600">ضخامت قلم:</span>
+                  <div className="flex items-center gap-1">
+                    {[2, 3, 5].map((w) => (
+                      <button
+                        key={w}
+                        onClick={() => setStrokeWidth(w)}
+                        className={`px-2 py-0.5 rounded font-mono-num font-bold cursor-pointer ${
+                          strokeWidth === w
+                            ? 'bg-sky-600 text-white'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        {w}px
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {openFlyout === 'shapes' && (
+              <div className="bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl p-2.5 w-52 flex flex-col gap-1 animate-in fade-in">
+                <div className="text-[11px] font-bold text-slate-500 px-1 pb-1 border-b border-slate-100">
+                  خطوط، نقاط و چندضلعی‌ها
+                </div>
+                {(
+                  [
+                    { id: 'point', label: 'نقطه نام‌گذاری‌شده (A, B)', icon: CircleDot },
+                    { id: 'segment', label: 'پاره‌خط (AB)', icon: Minus },
+                    { id: 'line', label: 'خط راست دوطرفه', icon: MoveHorizontal },
+                    { id: 'ray', label: 'نیم‌خط', icon: MoveUpRight },
+                    { id: 'triangle', label: 'رسم مثلث', icon: Triangle },
+                    { id: 'rect', label: 'رسم مستطیل و مربع', icon: Square },
+                    { id: 'regular-poly', label: 'چندضلعی منتظم', icon: Pentagon },
+                    { id: 'polygon', label: 'چندضلعی دلخواه (رأس‌به‌رأس)', icon: Shapes },
+                  ] as const
+                ).map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActiveTool(item.id);
+                        setSelectedPointIds([]);
+                        if (item.id !== 'regular-poly') setOpenFlyout(null);
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 cursor-pointer ${
+                        activeTool === item.id
+                          ? 'bg-sky-600 text-white'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+                <div className="pt-1.5 border-t border-slate-100 flex items-center justify-between px-1 text-[11px]">
+                  <span className="text-slate-600 font-medium">اضلاع منتظم:</span>
+                  <div className="flex items-center gap-1">
+                    {[3, 4, 5, 6, 8].map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => {
+                          setPolySides(n);
+                          setActiveTool('regular-poly');
+                          setOpenFlyout(null);
+                        }}
+                        className={`px-1.5 py-0.5 rounded font-mono-num font-bold cursor-pointer ${
+                          polySides === n && activeTool === 'regular-poly'
+                            ? 'bg-sky-600 text-white'
+                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                        }`}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {openFlyout === 'constructions' && (
+              <div className="bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl p-2.5 w-60 flex flex-col gap-1 animate-in fade-in">
+                <div className="text-[11px] font-bold text-slate-500 px-1 pb-1 border-b border-slate-100">
+                  ترسیمات پرگار و تبدیلات هندسی (v2.0)
+                </div>
+                {(
+                  [
+                    { id: 'perp-bisector', label: 'عمودمنصف پاره‌خط با پرگار', icon: Scissors },
+                    { id: 'angle-bisector', label: 'نیمساز زاویه (۳ نقطه)', icon: GitBranch },
+                    { id: 'perp-line', label: 'خط عمود از نقطه بر خط', icon: CornerRightDown },
+                    { id: 'parallel-line', label: 'خط موازی از نقطه خارج خط', icon: Equal },
+                    { id: 'circle-tangent', label: 'خطوط مماس بر دایره از بیرون ✨', icon: Compass },
+                    { id: 'axial-symmetry', label: 'رسم محور تقارن و بازتاب شکل 🪞', icon: FlipHorizontal2 },
+                  ] as const
+                ).map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActiveTool(item.id);
+                        setSelectedPointIds([]);
+                        setOpenFlyout(null);
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 text-right cursor-pointer ${
+                        activeTool === item.id
+                          ? 'bg-sky-600 text-white'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5 shrink-0" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+
+                <div className="pt-1.5 mt-0.5 border-t border-slate-100 flex flex-col gap-1">
+                  <button
+                    onClick={handleReflectSelectedShape}
+                    className="w-full px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 flex items-center gap-2 cursor-pointer"
+                  >
+                    <FlipHorizontal2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>تقارن محوری فوری شکل فعلی 🪞</span>
+                  </button>
+                  <button
+                    onClick={handleRotateSelected90}
+                    className="w-full px-2.5 py-1.5 rounded-xl text-xs font-bold bg-sky-50 text-sky-800 hover:bg-sky-100 border border-sky-200 flex items-center gap-2 cursor-pointer"
+                  >
+                    <RotateCw className="w-3.5 h-3.5 shrink-0" />
+                    <span>دوران ۹۰° شکل حول مرکز ثقل 🔄</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {openFlyout === 'templates' && (
+              <div className="bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl p-2.5 w-60 flex flex-col gap-1 animate-in fade-in">
+                <div className="text-[11px] font-bold text-amber-800 px-1 pb-1 border-b border-amber-100">
+                  ⚡ درج یک‌کلیکی اشکال استاندارد کلاس
+                </div>
+                {(
+                  [
+                    { id: 'equilateral', label: '△ مثلث متساوی‌الاضلاع (۶۰°)' },
+                    { id: 'right-triangle', label: '∟ مثلث قائم‌الزاویه (۳-۴-۵)' },
+                    { id: 'square', label: '□ مربع منتظم استاندارد' },
+                    { id: 'hexagon', label: '⬡ شش‌ضلعی منتظم استاندارد' },
+                    { id: 'circle-chord', label: '⊙ دایره و شعاع عمود بر وتر' },
+                    { id: 'parallel-transversal', label: '∥ دو خط موازی و خط مورب' },
+                    { id: 'thales-triangle', label: '📐 مثلث قضیه تالس (DE || BC)' },
+                    { id: 'circumcircle-triangle', label: '⭕ مثلث + دایره محیطی و محاطی' },
+                  ] as const
+                ).map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    onClick={() => insertQuickTemplate(tpl.id)}
+                    className="w-full text-right px-2.5 py-1.5 rounded-xl text-xs font-semibold text-slate-700 hover:bg-amber-50 hover:text-amber-900 transition-colors cursor-pointer"
+                  >
+                    {tpl.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {openFlyout === 'instruments' && (
+              <div className="bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl p-2.5 w-56 flex flex-col gap-1.5 animate-in fade-in">
+                <div className="text-[11px] font-bold text-slate-500 px-1 pb-1 border-b border-slate-100">
+                  ابزارهای فیزیکی و نمایش اندازه‌ها
+                </div>
+                <button
+                  onClick={() => setShowRuler((v) => !v)}
+                  className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    showRuler ? 'bg-amber-500 text-white' : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span>📏 خط‌کش فیزیکی (cm)</span>
+                  <span>{showRuler ? 'فعال' : 'غیرفعال'}</span>
+                </button>
+                <button
+                  onClick={() => setShowProtractor((v) => !v)}
+                  className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    showProtractor ? 'bg-amber-500 text-white' : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span>🧭 نقاله ۱۸۰ درجه</span>
+                  <span>{showProtractor ? 'فعال' : 'غیرفعال'}</span>
+                </button>
+                <button
+                  onClick={() => setShowSetSquare((v) => !v)}
+                  className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                    showSetSquare ? 'bg-amber-500 text-white' : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span>📐 گونیا قائم‌الزاویه</span>
+                  <span>{showSetSquare ? 'فعال' : 'غیرفعال'}</span>
+                </button>
+
+                <div className="border-t border-slate-100 pt-1.5 flex flex-col gap-1">
+                  <button
+                    onClick={() => setShowAngleArcs((v) => !v)}
+                    className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                      showAngleArcs
+                        ? 'bg-sky-50 text-sky-800 border border-sky-200'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>∠ نمایش کمان زوایای داخلی</span>
+                    <span>{showAngleArcs ? '✓' : '×'}</span>
+                  </button>
+                  <button
+                    onClick={() => setShowMeasurements((v) => !v)}
+                    className={`w-full px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between cursor-pointer ${
+                      showMeasurements
+                        ? 'bg-sky-50 text-sky-800 border border-sky-200'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>📏 نمایش طول اضلاع و شعاع</span>
+                    <span>{showMeasurements ? '✓' : '×'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Floating Compact Status Pill at Top-Left of Canvas */}
+          <div className="absolute left-3 top-2.5 z-10 flex items-center gap-2 pointer-events-none max-w-[72%]">
+            {smartRecognitionToast ? (
+              <div className="px-3 py-1 rounded-xl bg-emerald-600 text-white font-bold text-xs shadow-md animate-pulse">
+                {smartRecognitionToast}
+              </div>
+            ) : (
+              <div className="px-2.5 py-1 rounded-xl bg-white/90 backdrop-blur-xs border border-slate-200/80 text-[11px] text-slate-600 shadow-2xs truncate">
+                <strong className="text-sky-700 ml-1">{activeToolLabel[activeTool]}:</strong>
+                <span>{toolHelperText[activeTool]}</span>
+              </div>
+            )}
           </div>
 
           {backgroundImage && (
-            <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-amber-900">
-              <span className="font-semibold truncate max-w-[180px]">
+            <div className="absolute left-3 bottom-3 z-10 flex items-center gap-2 bg-amber-50/95 border border-amber-300 px-3 py-1 rounded-xl text-xs text-amber-900 shadow-sm">
+              <span className="font-semibold truncate max-w-[200px]">
                 📄 پس‌زمینه: {backgroundImage.title}
               </span>
               {onClearBackgroundImage && (
@@ -2102,57 +3043,12 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               )}
             </div>
           )}
-        </div>
 
-        {/* Instruction Strip + Smart Pen Recognition Badge */}
-        <div className="px-4 py-1.5 bg-sky-50/70 border-b border-slate-200 flex items-center justify-between gap-4 text-xs text-slate-700">
-          <div className="flex items-center gap-2 truncate">
-            {smartRecognitionToast ? (
-              <span className="px-2.5 py-0.5 rounded-md bg-emerald-600 text-white font-bold text-xs animate-pulse">
-                {smartRecognitionToast}
-              </span>
-            ) : (
-              <>
-                <span className="font-semibold text-sky-800 shrink-0">راهنمای سریع:</span>
-                <span className="truncate">{toolHelperText[activeTool]}</span>
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              onClick={() => setShowMeasurements((m) => !m)}
-              className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 text-[11px] cursor-pointer"
-            >
-              {showMeasurements ? 'پنهان کردن اندازه‌ها' : 'نمایش اندازه‌ها'}
-            </button>
-            {activePreset && (
-              <button
-                onClick={() => loadPreset(activePreset)}
-                className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center gap-1 cursor-pointer whitespace-nowrap"
-              >
-                <RotateCcw className="w-3 h-3" />
-                <span>بازنشانی شکل</span>
-              </button>
-            )}
-            <button
-              onClick={openBlankWhiteboard}
-              className="px-2 py-0.5 rounded bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 cursor-pointer whitespace-nowrap"
-            >
-              پاک کردن کل تخته
-            </button>
-          </div>
-        </div>
-
-        {/* Interactive SVG Whiteboard & Drafting Canvas (Touch & Stylus Ready) */}
-        <div
-          className={`relative flex-1 w-full min-h-[460px] select-none overflow-hidden ${
-            boardBg === 'grid' || boardBg === 'axes' ? 'drafting-grid' : 'bg-white'
-          }`}
-        >
+          {/* Interactive SVG Surface */}
           <svg
             ref={svgRef}
             data-testid="geometry-2d-canvas"
-            viewBox="0 0 760 500"
+            viewBox={`${vbX} ${vbY} ${vbWidth} ${vbHeight}`}
             style={{ touchAction: 'none' }}
             className={`w-full h-full ${
               activeTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
@@ -2175,7 +3071,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               />
             )}
 
-            {/* Coordinate Axes when 'axes' background is selected (extended across widescreen viewBox) */}
+            {/* Coordinate Axes when 'axes' background is selected */}
             {boardBg === 'axes' && (
               <g opacity="0.65">
                 <line x1="-400" y1="250" x2="1160" y2="250" stroke="#475569" strokeWidth="1.5" />
@@ -2210,7 +3106,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 })
               )}
 
-            {/* Polygons */}
+            {/* Polygons + V2 Automatic Interior Angle Arcs (∠) */}
             {polygons.map((poly) => {
               const pts = poly.vertices
                 .map(getPointById)
@@ -2219,17 +3115,47 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               const pointsAttr = pts.map((p) => `${p.x},${p.y}`).join(' ');
               const isSel = selectedItem?.kind === 'polygon' && selectedItem.id === poly.id;
               return (
-                <polygon
-                  key={poly.id}
-                  points={pointsAttr}
-                  fill={poly.fill || 'rgba(2, 132, 199, 0.08)'}
-                  stroke={isSel ? '#0284C7' : 'none'}
-                  strokeWidth={isSel ? 2 : 0}
-                />
+                <g key={poly.id}>
+                  <polygon
+                    points={pointsAttr}
+                    fill={poly.fill || 'rgba(2, 132, 199, 0.08)'}
+                    stroke={isSel ? '#0284C7' : 'none'}
+                    strokeWidth={isSel ? 2.5 : 0}
+                  />
+                  {/* Interior Vertex Angle Arcs */}
+                  {showAngleArcs &&
+                    pts.map((vertex, idx) => {
+                      const prev = pts[(idx - 1 + pts.length) % pts.length];
+                      const next = pts[(idx + 1) % pts.length];
+                      const arcInfo = computeVertexAngleArc(prev, vertex, next, 22);
+                      if (!arcInfo || Math.abs(arcInfo.deg - 90) <= 2.2) return null;
+                      return (
+                        <g key={`ang-arc-${poly.id}-${vertex.id}`} className="pointer-events-none">
+                          <path
+                            d={arcInfo.pathD}
+                            fill="rgba(2, 132, 199, 0.14)"
+                            stroke="#0284C7"
+                            strokeWidth="1.2"
+                          />
+                          <text
+                            x={arcInfo.labelPos.x}
+                            y={arcInfo.labelPos.y + 3}
+                            textAnchor="middle"
+                            fontSize="9.5"
+                            fontWeight="700"
+                            fill="#0369A1"
+                            className="font-mono-num"
+                          >
+                            {arcInfo.deg.toFixed(0)}°
+                          </text>
+                        </g>
+                      );
+                    })}
+                </g>
               );
             })}
 
-            {/* Freehand Whiteboard Strokes (Pen & Highlighter) */}
+            {/* Freehand Whiteboard Strokes */}
             {strokes.map((st) => {
               if (st.points.length < 2) return null;
               const d = st.points
@@ -2266,7 +3192,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               />
             )}
 
-            {/* Live Smart Pen Ghost Recognition Preview while drawing */}
+            {/* Live Smart Pen Ghost Recognition Preview */}
             {liveSmartPreview && liveSmartPreview.kind !== 'freehand' && (
               <g opacity="0.88" className="pointer-events-none">
                 {liveSmartPreview.kind === 'circle' && (
@@ -2295,7 +3221,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                   liveSmartPreview.kind === 'rectangle' ||
                   liveSmartPreview.kind === 'polygon') && (
                   <polygon
-                    points={liveSmartPreview.vertices.map((v) => `${v.x},${v.y}`).join(' ')}
+                    points={liveSmartPreview.vertices.map((v: Point2D) => `${v.x},${v.y}`).join(' ')}
                     fill="rgba(16, 185, 129, 0.08)"
                     stroke="#059669"
                     strokeWidth="2.5"
@@ -2304,7 +3230,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 )}
                 {liveSmartPreview.kind === 'angle' && (
                   <polyline
-                    points={liveSmartPreview.vertices.map((v) => `${v.x},${v.y}`).join(' ')}
+                    points={liveSmartPreview.vertices.map((v: Point2D) => `${v.x},${v.y}`).join(' ')}
                     fill="none"
                     stroke="#059669"
                     strokeWidth="2.5"
@@ -2488,7 +3414,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 : { x: mid.x - 32, y: mid.y + 18 };
               const boxWidth = seg.label ? 92 : 52;
 
-              // Compute endpoints for infinite line or ray
               let drawX1 = p1.x;
               let drawY1 = p1.y;
               let drawX2 = p2.x;
@@ -2520,7 +3445,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                     strokeDasharray={isDashed ? '5 5' : undefined}
                     strokeLinecap="round"
                   />
-                  {showMeasurements && (
+                  {showMeasurements && !isDashed && (
                     <g transform={`translate(${labelPos.x}, ${labelPos.y})`}>
                       <rect
                         x={-boxWidth / 2}
@@ -2545,20 +3470,21 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               );
             })}
 
-            {/* Live Drag-to-Draw Preview Overlay (with Smart Circle & Smart Line HUD) */}
+            {/* Live Drag-to-Draw Preview Overlay */}
             {dragDrawStart && (
               <g opacity="0.92">
                 {(activeTool === 'segment' ||
                   activeTool === 'line' ||
                   activeTool === 'ray' ||
-                  activeTool === 'perp-bisector') && (
+                  activeTool === 'perp-bisector' ||
+                  activeTool === 'axial-symmetry') && (
                   <>
                     <line
                       x1={dragDrawStart.startPt.x}
                       y1={dragDrawStart.startPt.y}
                       x2={dragDrawStart.currentPt.x}
                       y2={dragDrawStart.currentPt.y}
-                      stroke={activeColor}
+                      stroke={activeTool === 'axial-symmetry' ? '#D97706' : activeColor}
                       strokeWidth="2.4"
                       strokeDasharray="5 4"
                     />
@@ -2582,11 +3508,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                         fill="#FFFFFF"
                         className="font-mono-num"
                       >
-                        {(distance(dragDrawStart.startPt, dragDrawStart.currentPt) / 40).toFixed(2)} cm
-                        {dragDrawStart.snappedAngle !== null &&
-                        dragDrawStart.snappedAngle !== undefined
-                          ? ` • ${Math.abs(dragDrawStart.snappedAngle)}°`
-                          : ''}
+                        {activeTool === 'axial-symmetry'
+                          ? 'محور تقارن 🪞'
+                          : `${(
+                              distance(dragDrawStart.startPt, dragDrawStart.currentPt) / 40
+                            ).toFixed(2)} cm`}
                       </text>
                     </g>
                   </>
@@ -2608,23 +3534,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                         strokeWidth="2.4"
                         strokeDasharray="6 4"
                       />
-                      {/* Crosshair at center */}
-                      <line
-                        x1={dragDrawStart.startPt.x - 8}
-                        y1={dragDrawStart.startPt.y}
-                        x2={dragDrawStart.startPt.x + 8}
-                        y2={dragDrawStart.startPt.y}
-                        stroke={activeColor}
-                        strokeWidth="1.5"
-                      />
-                      <line
-                        x1={dragDrawStart.startPt.x}
-                        y1={dragDrawStart.startPt.y - 8}
-                        x2={dragDrawStart.startPt.x}
-                        y2={dragDrawStart.startPt.y + 8}
-                        stroke={activeColor}
-                        strokeWidth="1.5"
-                      />
                       <line
                         x1={dragDrawStart.startPt.x}
                         y1={dragDrawStart.startPt.y}
@@ -2634,7 +3543,6 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                         strokeWidth="1.8"
                         strokeDasharray="4 4"
                       />
-                      {/* Smart Circle Live HUD */}
                       <g
                         transform={`translate(${dragDrawStart.startPt.x}, ${Math.max(
                           28,
@@ -2782,7 +3690,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                       fontWeight="700"
                       fill="#D97706"
                     >
-                      G (مرکز ثقل / همرسی میانه‌ها)
+                      G (مرکز ثقل / میانه‌ها)
                     </text>
                   </g>
                 )}
@@ -2870,7 +3778,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               );
             })}
 
-            {/* Physical Draggable Ruler Overlay */}
+            {/* Physical Draggable & Rotatable Ruler Overlay */}
             {showRuler && (
               <g
                 transform={`translate(${rulerPos.x}, ${rulerPos.y}) rotate(${rulerPos.angle})`}
@@ -2886,7 +3794,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                   width="360"
                   height="42"
                   rx="5"
-                  fill="rgba(254, 243, 199, 0.9)"
+                  fill="rgba(254, 243, 199, 0.92)"
                   stroke="#D97706"
                   strokeWidth="1.6"
                 />
@@ -2904,6 +3812,20 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                     </text>
                   </g>
                 ))}
+                {/* Rotate 15° handle on Ruler */}
+                <g
+                  transform="translate(335, 21)"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setRulerPos((r) => ({ ...r, angle: (r.angle + 15) % 360 }));
+                  }}
+                  className="cursor-pointer"
+                >
+                  <circle r="11" fill="#D97706" />
+                  <text textAnchor="middle" y="3.5" fontSize="9" fontWeight="bold" fill="#FFF">
+                    ↻
+                  </text>
+                </g>
               </g>
             )}
 
@@ -2919,7 +3841,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
               >
                 <path
                   d="M -120 0 A 120 120 0 0 1 120 0 Z"
-                  fill="rgba(224, 242, 254, 0.78)"
+                  fill="rgba(224, 242, 254, 0.8)"
                   stroke="#0284C7"
                   strokeWidth="1.6"
                 />
@@ -2947,6 +3869,60 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                     </g>
                   );
                 })}
+              </g>
+            )}
+
+            {/* V2 NEW: Physical Draggable & Rotatable Right-Angle Set Square (گونیا قائم‌الزاویه) */}
+            {showSetSquare && (
+              <g
+                transform={`translate(${setSquarePos.x}, ${setSquarePos.y}) rotate(${setSquarePos.angle})`}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  setDraggingInstrument('setsquare');
+                }}
+                className="cursor-move"
+              >
+                <path
+                  d="M 0 0 L 0 180 L 180 180 Z M 24 85 L 24 156 L 95 156 Z"
+                  fillRule="evenodd"
+                  fill="rgba(16, 185, 129, 0.22)"
+                  stroke="#059669"
+                  strokeWidth="1.8"
+                />
+                {/* 90-degree corner marker on Set Square */}
+                <path
+                  d="M 0 164 L 16 164 L 16 180"
+                  fill="none"
+                  stroke="#047857"
+                  strokeWidth="1.6"
+                />
+                {[1, 2, 3, 4].map((cm) => (
+                  <g key={`sq-v-${cm}`} transform={`translate(0, ${180 - cm * 40})`}>
+                    <line x1="0" y1="0" x2="10" y2="0" stroke="#065F46" strokeWidth="1.4" />
+                    <text x="13" y="3" fontSize="9" fill="#065F46" className="font-mono-num">
+                      {cm}
+                    </text>
+                  </g>
+                ))}
+                {[1, 2, 3, 4].map((cm) => (
+                  <g key={`sq-h-${cm}`} transform={`translate(${cm * 40}, 180)`}>
+                    <line x1="0" y1="0" x2="0" y2="-10" stroke="#065F46" strokeWidth="1.4" />
+                  </g>
+                ))}
+                {/* Rotate 15° button on Set Square */}
+                <g
+                  transform="translate(42, 138)"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    setSetSquarePos((s) => ({ ...s, angle: (s.angle + 15) % 360 }));
+                  }}
+                  className="cursor-pointer"
+                >
+                  <circle r="11" fill="#059669" />
+                  <text textAnchor="middle" y="3.5" fontSize="9" fontWeight="bold" fill="#FFF">
+                    ↻
+                  </text>
+                </g>
               </g>
             )}
           </svg>
@@ -3012,56 +3988,67 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
           )}
         </div>
 
-        {/* Bottom Bar: Export PNG/JSON & Textbook Step-by-Step Construction Guide */}
-        <div className="p-3 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
-          <div>
+        {/* Slim Bottom Bar: Export PNG/JSON & Active Board Info */}
+        <div className="h-11 px-3 bg-white border-t border-slate-200 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 truncate">
             {activePreset ? (
               <>
-                <span className="text-[11px] font-semibold text-slate-500">
-                  {activePreset.chapterRef} · صفحه {activePreset.bookPage} کتاب
+                <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-700 text-[11px] font-bold shrink-0">
+                  {activePreset.chapterRef} · ص {activePreset.bookPage}
                 </span>
-                <h3 className="text-xs font-bold text-slate-900">{activePreset.title}</h3>
+                <h3 className="text-xs font-bold text-slate-900 truncate">{activePreset.title}</h3>
               </>
             ) : (
-              <div>
-                <span className="text-[11px] font-semibold text-emerald-700">حالت تخته سفید آزاد</span>
-                <h3 className="text-xs font-bold text-slate-900">
-                  تخته سفید ترسیمات هندسی و دست‌نویس آزاد
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-bold">
+                  {slides[activeSlideIndex]?.title || 'تخته سفید آزاد'}
+                </span>
+                <h3 className="text-xs font-bold text-slate-900 hidden sm:inline">
+                  ابر ترسیم هندسه (نسخه ۲.۰) — بوم هوشمند بدون محدودیت
                 </h3>
               </div>
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-1.5 shrink-0">
+            {activePreset && (
+              <button
+                onClick={() => loadPreset(activePreset)}
+                className="px-2 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>بازنشانی شکل</span>
+              </button>
+            )}
             {activePreset && onJumpToTextbookPage && (
               <button
                 onClick={() => onJumpToTextbookPage(activePreset.bookPage)}
-                className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200 flex items-center gap-1.5 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200 flex items-center gap-1 cursor-pointer"
               >
                 <Eye className="w-3.5 h-3.5" />
-                <span>مشاهده صفحه {activePreset.bookPage} در PDF</span>
+                <span className="hidden md:inline">صفحه {activePreset.bookPage} در PDF</span>
               </button>
             )}
             <button
               onClick={exportBoardPng}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
             >
               <ImageDown className="w-3.5 h-3.5" />
-              <span>خروجی تصویر PNG</span>
+              <span>خروجی PNG</span>
             </button>
             <button
               onClick={exportConstructionJson}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>ذخیره JSON</span>
+              <span className="hidden sm:inline">ذخیره JSON</span>
             </button>
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1 cursor-pointer"
             >
               <Upload className="w-3.5 h-3.5" />
-              <span>بارگذاری JSON</span>
+              <span className="hidden sm:inline">بارگذاری</span>
             </button>
             <input
               ref={fileInputRef}
@@ -3074,13 +4061,13 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         </div>
       </div>
 
-      {/* Collapsible Side Inspector Column: Presets, Live Telemetry, Pick's Theorem & Thales */}
+      {/* Collapsible Side Inspector Column: Presets, Animated Step Player, Live Telemetry & Thales */}
       {sidebarOpen && (
-        <div className="w-full lg:w-[370px] shrink-0 flex flex-col gap-3">
+        <div className="w-full lg:w-[360px] shrink-0 flex flex-col gap-2.5 overflow-y-auto h-full pl-0.5">
           {/* Textbook Interactive Presets Selector */}
-          <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
+          <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
             <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-sky-600" />
                 <h3 className="text-xs font-bold text-slate-900">
                   ترسیم‌های آماده کتاب هندسه ۱
@@ -3090,17 +4077,17 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 onClick={openBlankWhiteboard}
                 className="text-[11px] font-bold text-emerald-700 hover:underline cursor-pointer"
               >
-                + صفحه سفید خالی
+                + تخته سفید خالی
               </button>
             </div>
-            <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pl-1">
+            <div className="flex flex-col gap-1 max-h-48 overflow-y-auto pl-1">
               {GEOMETRY_PRESETS.map((preset) => {
                 const isSelected = activePreset?.id === preset.id;
                 return (
                   <button
                     key={preset.id}
                     onClick={() => loadPreset(preset)}
-                    className={`w-full text-right px-3 py-2 rounded-lg text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer ${
+                    className={`w-full text-right px-2.5 py-1.5 rounded-lg text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer ${
                       isSelected
                         ? 'bg-slate-900 text-white font-semibold'
                         : 'bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200/70'
@@ -3120,27 +4107,58 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             </div>
 
             {activePreset && (
-              <div className="mt-2.5 pt-2.5 border-t border-slate-200 grid grid-cols-1 gap-1">
-                {activePreset.steps.map((step, idx) => (
+              <div className="mt-2.5 pt-2.5 border-t border-slate-200 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-slate-700">مراحل گام‌به‌گام ترسیم:</span>
                   <button
-                    key={idx}
-                    onClick={() => setActiveStepIndex(idx)}
-                    className={`text-right px-2.5 py-1.5 rounded text-[11px] border transition-colors cursor-pointer ${
-                      idx <= activeStepIndex
-                        ? 'bg-sky-50/70 border-sky-200 text-slate-800'
-                        : 'bg-slate-50 border-slate-200 text-slate-400'
-                    }`}
+                    onClick={() => {
+                      if (isPlayingSteps) {
+                        setIsPlayingSteps(false);
+                      } else {
+                        setActiveStepIndex(0);
+                        setIsPlayingSteps(true);
+                      }
+                    }}
+                    className="px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
                   >
-                    {step}
+                    {isPlayingSteps ? (
+                      <>
+                        <Pause className="w-3 h-3" />
+                        <span>توقف پخش</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3 h-3" />
+                        <span>پخش خودکار مراحل</span>
+                      </>
+                    )}
                   </button>
-                ))}
+                </div>
+                <div className="grid grid-cols-1 gap-1">
+                  {activePreset.steps.map((step, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setIsPlayingSteps(false);
+                        setActiveStepIndex(idx);
+                      }}
+                      className={`text-right px-2.5 py-1.5 rounded text-[11px] border transition-colors cursor-pointer ${
+                        idx <= activeStepIndex
+                          ? 'bg-sky-50/70 border-sky-200 text-slate-800 font-medium'
+                          : 'bg-slate-50 border-slate-200 text-slate-400'
+                      }`}
+                    >
+                      {step}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
 
           {/* Live Triangle Telemetry & Concurrency Inspector */}
           {triangleStats && (
-            <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-bold text-slate-900">
                   تحلیل زنده مثلث ({points[0]?.label}
@@ -3236,7 +4254,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
           {/* Pick's Theorem Calculator */}
           {picksResult && (
-            <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
               <div className="flex items-center justify-between mb-1.5">
                 <h3 className="text-xs font-bold text-slate-900">
                   فرمول پیک در چندضلعی شبکه‌ای (ص ۷۰)
@@ -3269,7 +4287,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
           )}
 
           {/* Thales & Right Triangle Interactive Simulators */}
-          <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs space-y-3">
+          <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs space-y-3">
             <div>
               <h3 className="text-xs font-bold text-slate-900 mb-1.5">
                 شبیه‌ساز قضیه تالس (ص ۳۴: DE || BC)

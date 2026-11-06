@@ -79,20 +79,25 @@ export default function App() {
       }`}
     >
       {/* Top Bar Contract: 3 Distinct Zones (Brand Wordmark | 4 Single-Line Nav Links | 1 Primary CTA) — Zero Horizontal Scrollbar */}
-      <header className="h-14 bg-white border-b border-[#E2E8F0] px-3 sm:px-5 flex items-center justify-between gap-2 shrink-0 z-20 overflow-hidden">
+      <header className="h-12 bg-white border-b border-[#E2E8F0] px-3 sm:px-5 flex items-center justify-between gap-2 shrink-0 z-20 overflow-hidden">
         {/* Zone 1: Brand Wordmark + Developer Credit */}
         <div
           onClick={() => setActiveTab('studio-2d')}
           className="flex items-center gap-2 cursor-pointer shrink-0"
         >
-          <div className="w-8 h-8 rounded-lg bg-[#0F172A] flex items-center justify-center text-white shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-[#0F172A] flex items-center justify-center text-white shrink-0 shadow-xs">
             <Compass className="w-4.5 h-4.5 text-[#38BDF8]" />
           </div>
           <div>
-            <span className="text-sm sm:text-base font-bold tracking-tight text-[#0F172A] block leading-none">
-              ترسیم هندسه
-            </span>
-            <span className="text-[10px] sm:text-[11px] text-[#475569] font-medium block mt-1 whitespace-nowrap">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm sm:text-base font-bold tracking-tight text-[#0F172A] leading-none">
+                ابر ترسیم هندسه
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-sky-100 text-[#0284C7] text-[10px] font-bold leading-none">
+                v2.0
+              </span>
+            </div>
+            <span className="text-[10px] sm:text-[11px] text-[#475569] font-medium block mt-0.5 whitespace-nowrap">
               طراح و توسعه‌دهنده: امیرحسین رضایی
             </span>
           </div>

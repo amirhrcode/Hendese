@@ -986,4 +986,139 @@ export function recognizeSmartStroke(points: Point2D[]): RecognizedShapeResult {
   return { kind: 'freehand', labelFa: 'دست‌خط آزاد' };
 }
 
+/**
+ * Super Geometry v2.0: Reflects point P across the line passing through lineA and lineB.
+ */
+export function reflectPointAcrossLine(
+  pt: Point2D,
+  lineA: Point2D,
+  lineB: Point2D
+): Point2D {
+  const foot = footOfPerpendicular(pt, lineA, lineB);
+  return {
+    x: Number((2 * foot.x - pt.x).toFixed(2)),
+    y: Number((2 * foot.y - pt.y).toFixed(2)),
+  };
+}
+
+/**
+ * Super Geometry v2.0: Rotates point P around `center` by `angleDegVal` degrees.
+ */
+export function rotatePointAroundCenter(
+  pt: Point2D,
+  center: Point2D,
+  angleDegVal: number
+): Point2D {
+  const rad = (angleDegVal * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = pt.x - center.x;
+  const dy = pt.y - center.y;
+  return {
+    x: Number((center.x + dx * cos - dy * sin).toFixed(2)),
+    y: Number((center.y + dx * sin + dy * cos).toFixed(2)),
+  };
+}
+
+/**
+ * Super Geometry v2.0: Computes exact tangent touch points T1, T2 on circle (center, radius)
+ * from an external point P.
+ */
+export function circleTangentsFromPoint(
+  externalPt: Point2D,
+  center: Point2D,
+  radius: number
+): Point2D[] {
+  const d = distance(externalPt, center);
+  if (d < radius - 1e-6 || radius <= 0) return [];
+  if (Math.abs(d - radius) <= 1e-6) {
+    return [{ x: externalPt.x, y: externalPt.y }];
+  }
+  const baseAngle = Math.atan2(externalPt.y - center.y, externalPt.x - center.x);
+  const alpha = Math.acos(Math.max(-1, Math.min(1, radius / d)));
+  return [
+    {
+      x: Number((center.x + radius * Math.cos(baseAngle + alpha)).toFixed(2)),
+      y: Number((center.y + radius * Math.sin(baseAngle + alpha)).toFixed(2)),
+    },
+    {
+      x: Number((center.x + radius * Math.cos(baseAngle - alpha)).toFixed(2)),
+      y: Number((center.y + radius * Math.sin(baseAngle - alpha)).toFixed(2)),
+    },
+  ];
+}
+
+/**
+ * Ray-casting algorithm to determine whether `pt` lies inside `polygon`.
+ */
+export function pointInPolygon(pt: Point2D, polygon: Point2D[]): boolean {
+  if (polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    const intersect =
+      yi > pt.y !== yj > pt.y &&
+      pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi || 1e-9) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Computes SVG arc sector path and label position for displaying interior vertex angles.
+ */
+export function computeVertexAngleArc(
+  prev: Point2D,
+  vertex: Point2D,
+  next: Point2D,
+  arcRadius = 22
+): {
+  deg: number;
+  pathD: string;
+  labelPos: Point2D;
+} | null {
+  const l1 = distance(vertex, prev);
+  const l2 = distance(vertex, next);
+  if (l1 < 28 || l2 < 28) return null;
+
+  const deg = angleDeg(prev, vertex, next);
+  if (deg < 3 || deg > 177) return null;
+
+  const r = Math.min(arcRadius, l1 * 0.35, l2 * 0.35);
+  const u1x = (prev.x - vertex.x) / l1;
+  const u1y = (prev.y - vertex.y) / l1;
+  const u2x = (next.x - vertex.x) / l2;
+  const u2y = (next.y - vertex.y) / l2;
+
+  const startX = vertex.x + u1x * r;
+  const startY = vertex.y + u1y * r;
+  const endX = vertex.x + u2x * r;
+  const endY = vertex.y + u2y * r;
+
+  // Sweep flag using cross product so the smaller interior angle is swept
+  const cross = u1x * u2y - u1y * u2x;
+  const sweepFlag = cross >= 0 ? 1 : 0;
+
+  let bx = u1x + u2x;
+  let by = u1y + u2y;
+  const bLen = Math.hypot(bx, by) || 1;
+  bx /= bLen;
+  by /= bLen;
+
+  const pathD = `M ${vertex.x} ${vertex.y} L ${startX.toFixed(1)} ${startY.toFixed(1)} A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 ${sweepFlag} ${endX.toFixed(1)} ${endY.toFixed(1)} Z`;
+
+  return {
+    deg: Math.round(deg * 10) / 10,
+    pathD,
+    labelPos: {
+      x: vertex.x + bx * (r + 12),
+      y: vertex.y + by * (r + 12),
+    },
+  };
+}
+
+
 
