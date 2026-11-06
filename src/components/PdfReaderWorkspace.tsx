@@ -15,7 +15,6 @@ import {
   FolderOpen,
   Sparkles,
   Box,
-  Layers,
   Eye,
   EyeOff,
   Check,
@@ -31,7 +30,11 @@ import {
   Square,
   Highlighter,
   MousePointer,
-  Wand2
+  Wand2,
+  Scissors,
+  ImageDown,
+  Bookmark,
+  Grid,
 } from 'lucide-react';
 import {
   TEXTBOOK_LESSONS,
@@ -61,6 +64,8 @@ type OverlayTool =
   | 'smart-pen'
   | 'pen'
   | 'highlighter'
+  | 'laser'
+  | 'crop'
   | 'eraser'
   | 'segment'
   | 'line'
@@ -70,7 +75,16 @@ type OverlayTool =
 
 interface OverlayStroke {
   id: string;
-  type: 'pen' | 'highlighter' | 'segment' | 'line' | 'circle' | 'rect' | 'bisector';
+  type:
+    | 'pen'
+    | 'highlighter'
+    | 'segment'
+    | 'line'
+    | 'circle'
+    | 'rect'
+    | 'polygon'
+    | 'bisector'
+    | 'crop';
   points: { x: number; y: number }[];
   color: string;
   width?: number;
@@ -80,6 +94,7 @@ interface PdfReaderWorkspaceProps {
   initialBookPage?: number;
   onOpen2DStudio: (presetId: string) => void;
   onOpen3DLab: (mode: 'cross-section' | 'revolution' | 'space-lines' | 'voxels') => void;
+  onSendImageTo2DStudio?: (dataUrl: string, title: string) => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
 }
@@ -121,6 +136,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   initialBookPage = 10,
   onOpen2DStudio,
   onOpen3DLab,
+  onSendImageTo2DStudio,
   isFullscreen = false,
   onToggleFullscreen,
 }) => {
@@ -134,8 +150,18 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   const [activePdfTitle, setActivePdfTitle] = useState<string>('کتاب درسی هندسه ۱ (پایه دهم)');
   const [isDefaultTextbook, setIsDefaultTextbook] = useState<boolean>(true);
 
-  // Sidebar collapse state
+  // Sidebar collapse state & Page Grid Modal
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
+  const [showPageGridModal, setShowPageGridModal] = useState<boolean>(false);
+  const [bookmarkedPages, setBookmarkedPages] = useState<number[]>(() => {
+    try {
+      const saved = localStorage.getItem('hendese_pdf_bookmarks');
+      return saved ? JSON.parse(saved) : [11, 20, 35, 43, 71];
+    } catch {
+      return [11, 20, 35, 43, 71];
+    }
+  });
+  const [pdfToast, setPdfToast] = useState<string | null>(null);
 
   // Local PDF Library (IndexedDB)
   const [savedPdfs, setSavedPdfs] = useState<Omit<StoredPdfFile, 'data'>[]>([]);
@@ -158,13 +184,48 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   const [isPointerDown, setIsPointerDown] = useState<boolean>(false);
   const [draftStroke, setDraftStroke] = useState<OverlayStroke | null>(null);
   const [dragLastPt, setDragLastPt] = useState<{ x: number; y: number } | null>(null);
+  const [laserTrail, setLaserTrail] = useState<{ x: number; y: number; t: number }[]>([]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const viewportScrollRef = useRef<HTMLDivElement | null>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textbookBufferCacheRef = useRef<ArrayBuffer | null>(null);
+
+  // Auto-fade laser trail
+  useEffect(() => {
+    if (laserTrail.length === 0) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setLaserTrail((prev) => prev.filter((pt) => now - pt.t < 750));
+    }, 50);
+    return () => window.clearInterval(timer);
+  }, [laserTrail.length]);
+
+  const showToastMsg = useCallback((msg: string) => {
+    setPdfToast(msg);
+    window.setTimeout(() => setPdfToast(null), 3200);
+  }, []);
+
+  const toggleBookmarkCurrentPage = () => {
+    setBookmarkedPages((prev) => {
+      const exists = prev.includes(currentPdfPage);
+      const next = exists
+        ? prev.filter((p) => p !== currentPdfPage)
+        : [...prev, currentPdfPage].sort((a, b) => a - b);
+      try {
+        localStorage.setItem('hendese_pdf_bookmarks', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      showToastMsg(
+        exists ? 'نشانک این صفحه برداشته شد' : `★ صفحه ${isDefaultTextbook ? currentPdfPage - 1 : currentPdfPage} نشانک‌گذاری شد`
+      );
+      return next;
+    });
+  };
 
   // Sync external initialBookPage requests
   useEffect(() => {
@@ -404,6 +465,28 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
       } else if (stroke.type === 'rect' && pts.length >= 2) {
         const [p1, p2] = pts;
         ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+      } else if (stroke.type === 'polygon' && pts.length >= 3) {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i].x, pts[i].y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(2, 132, 199, 0.08)';
+        ctx.fill();
+      } else if (stroke.type === 'crop' && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const x = Math.min(p1.x, p2.x);
+        const y = Math.min(p1.y, p2.y);
+        const w = Math.abs(p2.x - p1.x);
+        const h = Math.abs(p2.y - p1.y);
+        ctx.fillStyle = 'rgba(2, 132, 199, 0.14)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = '#0284C7';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(x, y, w, h);
       } else if (stroke.type === 'bisector' && pts.length >= 2) {
         ctx.beginPath();
         ctx.setLineDash([4, 4]);
@@ -437,7 +520,74 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     if (draftStroke) {
       renderStroke(draftStroke, false, true);
     }
-  }, [pageAnnotations, currentPdfPage, scale, overlayEnabled, draftStroke, selectedStrokeId]);
+
+    // Render glowing red laser pointer trail
+    if (laserTrail.length > 1) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.45)';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(laserTrail[0].x * scale, laserTrail[0].y * scale);
+      for (let i = 1; i < laserTrail.length; i++) {
+        ctx.lineTo(laserTrail[i].x * scale, laserTrail[i].y * scale);
+      }
+      ctx.stroke();
+
+      const last = laserTrail[laserTrail.length - 1];
+      ctx.fillStyle = '#EF4444';
+      ctx.beginPath();
+      ctx.arc(last.x * scale, last.y * scale, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }, [pageAnnotations, currentPdfPage, scale, overlayEnabled, draftStroke, selectedStrokeId, laserTrail]);
+
+  // Fit PDF page cleanly to current viewport width
+  const fitToViewportWidth = useCallback(async () => {
+    if (!pdfDoc || !viewportScrollRef.current) return;
+    try {
+      const page = await pdfDoc.getPage(currentPdfPage);
+      const unscaled = page.getViewport({ scale: 1, rotation });
+      const availW = Math.max(320, viewportScrollRef.current.clientWidth - 48);
+      const nextScale = Math.min(2.4, Math.max(0.65, +(availW / unscaled.width).toFixed(2)));
+      setScale(nextScale);
+      showToastMsg(`تناسب خودکار با عرض صفحه (${Math.round(nextScale * 100)}%)`);
+    } catch {
+      // ignore
+    }
+  }, [pdfDoc, currentPdfPage, rotation, showToastMsg]);
+
+  // Export current PDF page + geometric overlay annotations as a single high-res PNG
+  const exportAnnotatedPdfPagePng = () => {
+    const pdfCanvas = pdfCanvasRef.current;
+    const overlayCanvas = overlayCanvasRef.current;
+    if (!pdfCanvas) return;
+    const out = document.createElement('canvas');
+    out.width = pdfCanvas.width;
+    out.height = pdfCanvas.height;
+    const ctx = out.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(pdfCanvas, 0, 0);
+    if (overlayCanvas && overlayEnabled) {
+      ctx.drawImage(overlayCanvas, 0, 0, out.width, out.height);
+    }
+    const a = document.createElement('a');
+    a.download = `hendese-page-${isDefaultTextbook ? currentPdfPage - 1 : currentPdfPage}.png`;
+    a.href = out.toDataURL('image/png');
+    a.click();
+    showToastMsg('📸 تصویر صفحه به همراه ترسیمات ذخیره شد');
+  };
+
+  // Send the entire current PDF page to the 2D Whiteboard background
+  const sendFullPageToWhiteboard = () => {
+    const pdfCanvas = pdfCanvasRef.current;
+    if (!pdfCanvas || !onSendImageTo2DStudio) return;
+    const dataUrl = pdfCanvas.toDataURL('image/png');
+    const pageTitle = `صفحه ${isDefaultTextbook ? currentPdfPage - 1 : currentPdfPage} (${activePdfTitle})`;
+    onSendImageTo2DStudio(dataUrl, pageTitle);
+  };
 
   // Handle local PDF upload from user device (Android / Desktop)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -488,12 +638,15 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     }
   };
 
-  // Pointer coordinates normalized to scale = 1
+  // Pointer coordinates normalized to scale = 1 with exact CSS-to-Canvas ratio
   const getNormalizedCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const ratioX = (canvas.width || rect.width) / (rect.width || 1);
+    const ratioY = (canvas.height || rect.height) / (rect.height || 1);
     return {
-      x: (e.clientX - rect.left) / scale,
-      y: (e.clientY - rect.top) / scale,
+      x: ((e.clientX - rect.left) * ratioX) / scale,
+      y: ((e.clientY - rect.top) * ratioY) / scale,
     };
   };
 
@@ -517,6 +670,11 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     const pt = getNormalizedCoords(e);
     setIsPointerDown(true);
 
+    if (activeTool === 'laser') {
+      setLaserTrail([{ x: pt.x, y: pt.y, t: Date.now() }]);
+      return;
+    }
+
     const currentStrokes = pageAnnotations[currentPdfPage] || [];
 
     if (activeTool === 'select') {
@@ -534,6 +692,16 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
           [currentPdfPage]: (prev[currentPdfPage] || []).filter((s) => s.id !== hitId),
         }));
       }
+      return;
+    }
+
+    if (activeTool === 'crop') {
+      setDraftStroke({
+        id: `crop-${Date.now()}`,
+        type: 'crop',
+        points: [pt, pt],
+        color: '#0284C7',
+      });
       return;
     }
 
@@ -559,6 +727,11 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
   const handleOverlayPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isPointerDown || !overlayEnabled || activeTool === 'pan') return;
     const pt = getNormalizedCoords(e);
+
+    if (activeTool === 'laser') {
+      setLaserTrail((prev) => [...prev.slice(-28), { x: pt.x, y: pt.y, t: Date.now() }]);
+      return;
+    }
 
     if (activeTool === 'select' && selectedStrokeId && dragLastPt) {
       const dx = pt.x - dragLastPt.x;
@@ -604,12 +777,68 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     setIsPointerDown(false);
     setDragLastPt(null);
     if (draftStroke) {
+      // Handle Crop & Send Exercise to 2D Studio
+      if (draftStroke.type === 'crop' && draftStroke.points.length >= 2) {
+        const [p1, p2] = draftStroke.points;
+        setDraftStroke(null);
+        const pdfCanvas = pdfCanvasRef.current;
+        const overlayCanvas = overlayCanvasRef.current;
+        if (!pdfCanvas || !overlayCanvas || !onSendImageTo2DStudio) return;
+
+        const dprRatioX = pdfCanvas.width / (overlayCanvas.width || 1);
+        const dprRatioY = pdfCanvas.height / (overlayCanvas.height || 1);
+        const sx = Math.min(p1.x, p2.x) * scale * dprRatioX;
+        const sy = Math.min(p1.y, p2.y) * scale * dprRatioY;
+        const sw = Math.abs(p2.x - p1.x) * scale * dprRatioX;
+        const sh = Math.abs(p2.y - p1.y) * scale * dprRatioY;
+
+        if (sw > 25 && sh > 25) {
+          const cropCanvas = document.createElement('canvas');
+          cropCanvas.width = Math.round(sw);
+          cropCanvas.height = Math.round(sh);
+          const cCtx = cropCanvas.getContext('2d');
+          if (cCtx) {
+            cCtx.fillStyle = '#FFFFFF';
+            cCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+            cCtx.drawImage(
+              pdfCanvas,
+              sx,
+              sy,
+              sw,
+              sh,
+              0,
+              0,
+              cropCanvas.width,
+              cropCanvas.height
+            );
+            const dataUrl = cropCanvas.toDataURL('image/png');
+            const label = `تمرین برش‌خورده از ص ${isDefaultTextbook ? currentPdfPage - 1 : currentPdfPage}`;
+            onSendImageTo2DStudio(dataUrl, label);
+          }
+        }
+        return;
+      }
+
       let finalStroke: OverlayStroke = draftStroke;
 
-      // Smart Pen recognition on PDF overlay
+      // Smart Pen v2 recognition on PDF overlay
       if (activeTool === 'smart-pen' && draftStroke.points.length >= 6) {
         const recognized = recognizeSmartStroke(draftStroke.points);
-        if (recognized.kind === 'circle') {
+        if (recognized.kind === 'erase-gesture') {
+          const { minX, maxX, minY, maxY } = recognized.bounds;
+          setPageAnnotations((prev) => ({
+            ...prev,
+            [currentPdfPage]: (prev[currentPdfPage] || []).filter(
+              (s) =>
+                !s.points.some(
+                  (p) => p.x >= minX - 10 && p.x <= maxX + 10 && p.y >= minY - 10 && p.y <= maxY + 10
+                )
+            ),
+          }));
+          setDraftStroke(null);
+          showToastMsg('🧹 ژست خط‌خطی هوشمند: ترسیمات زیر قلم پاک شدند');
+          return;
+        } else if (recognized.kind === 'circle') {
           finalStroke = {
             id: `smart-cir-${Date.now()}`,
             type: 'circle',
@@ -619,14 +848,16 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             ],
             color: strokeColor,
           };
+          showToastMsg('✨ تشخیص قلم هوشمند: دایره منظم');
         } else if (recognized.kind === 'segment') {
-          const snappedEnd = snapSmartLineEndpoint(recognized.start, recognized.end, 7);
+          const snappedEnd = snapSmartLineEndpoint(recognized.start, recognized.end, 4);
           finalStroke = {
             id: `smart-seg-${Date.now()}`,
             type: 'segment',
             points: [recognized.start, snappedEnd.point],
             color: strokeColor,
           };
+          showToastMsg('✨ تشخیص قلم هوشمند: پاره‌خط صاف');
         } else if (recognized.kind === 'rectangle') {
           const xs = recognized.vertices.map((v) => v.x);
           const ys = recognized.vertices.map((v) => v.y);
@@ -639,12 +870,26 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             ],
             color: strokeColor,
           };
+          showToastMsg(recognized.isSquare ? '✨ تشخیص قلم هوشمند: مربع منتظم' : '✨ تشخیص قلم هوشمند: مستطیل');
+        } else if (recognized.kind === 'triangle' || recognized.kind === 'polygon') {
+          finalStroke = {
+            id: `smart-poly-${Date.now()}`,
+            type: 'polygon',
+            points: recognized.vertices,
+            color: strokeColor,
+          };
+          showToastMsg(
+            recognized.kind === 'triangle'
+              ? '✨ تشخیص قلم هوشمند: مثلث منظم'
+              : `✨ تشخیص قلم هوشمند: ${recognized.sides}ضلعی منتظم`
+          );
         }
       }
 
       const isMeaningful =
         finalStroke.type === 'pen' ||
         finalStroke.type === 'highlighter' ||
+        finalStroke.type === 'polygon' ||
         (finalStroke.points.length >= 2 &&
           distance(finalStroke.points[0], finalStroke.points[1]) > 4 / scale);
 
@@ -710,12 +955,14 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
     }
   }
 
+  const isCurrentBookmarked = bookmarkedPages.includes(currentPdfPage);
+
   return (
     <div
       ref={containerRef}
-      className="flex w-full bg-[#F8FAFC] overflow-hidden h-[calc(100vh-3.5rem)]"
+      className="flex w-full bg-[#F8FAFC] overflow-hidden h-[calc(100vh-3.5rem)] relative"
     >
-      {/* Collapsible Right Sidebar (RTL): Textbook Chapters & Local PDF Library */}
+      {/* Collapsible Right Sidebar (RTL): Textbook Chapters, Bookmarks & Local PDF Library */}
       {sidebarOpen && (
         <aside className="w-72 shrink-0 bg-white border-l border-[#E2E8F0] flex flex-col h-full">
           {/* Document Switcher Header */}
@@ -768,6 +1015,34 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                 </button>
               )}
             </div>
+
+            {/* Quick Bookmarked Pages Chips */}
+            {bookmarkedPages.length > 0 && (
+              <div className="pt-1">
+                <span className="text-[10px] font-semibold text-[#64748B] block mb-1">
+                  ★ صفحات نشانک‌گذاری‌شده:
+                </span>
+                <div className="flex items-center gap-1 flex-wrap">
+                  {bookmarkedPages.map((p) => {
+                    const disp = isDefaultTextbook ? Math.max(1, p - 1) : p;
+                    const active = p === currentPdfPage;
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => setCurrentPdfPage(p)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono-num font-bold cursor-pointer ${
+                          active
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                        }`}
+                      >
+                        ص {disp}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Saved Local PDFs Panel OR Textbook TOC */}
@@ -946,7 +1221,6 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             </button>
 
             <div className="flex items-center gap-1 text-xs">
-              <span className="text-[#475569] hidden md:inline">صفحه:</span>
               <input
                 type="number"
                 min={1}
@@ -975,9 +1249,31 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
               <ChevronLeft className="w-4 h-4 text-[#0F172A]" />
             </button>
 
+            {/* Bookmark & Page Grid Buttons */}
+            <button
+              onClick={toggleBookmarkCurrentPage}
+              className={`p-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 cursor-pointer ${
+                isCurrentBookmarked
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : 'border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#475569]'
+              }`}
+              title="نشانک‌گذاری این صفحه"
+            >
+              <Bookmark className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() => setShowPageGridModal((v) => !v)}
+              className="px-2 py-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] text-xs font-semibold flex items-center gap-1 cursor-pointer"
+              title="پرش سریع بین تمام صفحات کتاب"
+            >
+              <Grid className="w-3.5 h-3.5 text-[#0284C7]" />
+              <span className="hidden md:inline">نمای صفحات</span>
+            </button>
+
             <div className="h-5 w-px bg-[#E2E8F0] mx-0.5" />
 
-            {/* Zoom & Rotation Controls */}
+            {/* Zoom, Fit-Width & Rotation Controls */}
             <button
               onClick={() => setScale((s) => Math.max(0.6, +(s - 0.15).toFixed(2)))}
               className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] cursor-pointer"
@@ -994,6 +1290,13 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
               title="بزرگ‌نمایی"
             >
               <ZoomIn className="w-4 h-4 text-[#0F172A]" />
+            </button>
+            <button
+              onClick={fitToViewportWidth}
+              className="px-2 py-1 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-xs font-semibold text-[#0F172A] cursor-pointer"
+              title="تناسب خودکار اندازه PDF با عرض صفحه نمایش"
+            >
+              تناسب عرض
             </button>
             <button
               onClick={() => setRotation((r) => (r + 90) % 360)}
@@ -1052,7 +1355,7 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                       ? 'bg-[#0284C7] text-white shadow-xs'
                       : 'bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100'
                   }`}
-                  title="قلم هوشمند تشخیص دایره، خط صاف و مستطیل روی PDF"
+                  title="قلم هوشمند تشخیص دایره، خط، مثلث و مستطیل روی PDF"
                 >
                   <Wand2 className="w-3.5 h-3.5" />
                   <span>قلم هوشمند ✨</span>
@@ -1080,6 +1383,18 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                 >
                   <Highlighter className="w-3.5 h-3.5" />
                   <span>ماژیک</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTool('laser')}
+                  className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 cursor-pointer ${
+                    activeTool === 'laser'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'text-[#475569] hover:text-rose-600'
+                  }`}
+                  title="لیزر تدریس روی کتاب"
+                >
+                  <span>لیزر 🔴</span>
                 </button>
 
                 <button
@@ -1128,6 +1443,19 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
                 >
                   <Compass className="w-3.5 h-3.5" />
                   <span>عمودمنصف</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTool('crop')}
+                  className={`px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1 cursor-pointer ${
+                    activeTool === 'crop'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                  title="کادر بکشید تا تمرین یا شکل کتاب برش خورده و به تخته سفید ۲بعدی فرستاده شود"
+                >
+                  <Scissors className="w-3.5 h-3.5" />
+                  <span>برش تمرین به تخته ✂️</span>
                 </button>
 
                 <button
@@ -1186,18 +1514,28 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
             )}
           </div>
 
-          {/* Right Action Group: Fullscreen & Interactive Lesson Link */}
+          {/* Right Action Group: Send Page to Whiteboard, Save PNG, Fullscreen */}
           <div className="flex items-center gap-1.5 shrink-0">
-            {activeLesson && activeLesson.linkedPresetId && (
+            {onSendImageTo2DStudio && (
               <button
-                onClick={() => onOpen2DStudio(activeLesson!.linkedPresetId!)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#F0F9FF] hover:bg-[#E0F2FE] text-[#0284C7] border border-[#BAE6FD] text-xs font-bold transition-colors cursor-pointer"
-                title="باز کردن ترسیم این درس در تخته سفید"
+                onClick={sendFullPageToWhiteboard}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-colors cursor-pointer"
+                title="ارسال کل این صفحه به پس‌زمینه تخته سفید ۲بعدی برای حل تمرین"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span className="hidden 2xl:inline">تخته سفید این درس</span>
+                <span className="hidden xl:inline">ارسال صفحه به تخته سفید</span>
               </button>
             )}
+
+            <button
+              onClick={exportAnnotatedPdfPagePng}
+              className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
+              title="دانلود تصویر این صفحه به همراه ترسیمات (PNG)"
+            >
+              <ImageDown className="w-4 h-4 text-[#0284C7]" />
+              <span className="hidden 2xl:inline">ذخیره PNG</span>
+            </button>
+
             <button
               onClick={toggleFullscreen}
               className="p-1.5 rounded-lg border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#0F172A] flex items-center gap-1 text-xs font-semibold cursor-pointer"
@@ -1213,8 +1551,29 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
           </div>
         </div>
 
+        {/* Status Toast Banner when Smart Pen / Crop / Bookmark triggers */}
+        {(pdfToast || activeTool === 'crop') && (
+          <div className="bg-sky-50 border-b border-sky-200 px-4 py-1 text-xs font-bold text-sky-900 flex items-center justify-between">
+            <span>
+              {pdfToast ||
+                '✂️ حالت برش تمرین فعال است: دور هر شکل یا تمرین کتاب کادر بکشید تا مستقیماً به تخته سفید ۲بعدی منتقل شود!'}
+            </span>
+            {activeTool === 'crop' && (
+              <button
+                onClick={() => setActiveTool('smart-pen')}
+                className="text-rose-600 hover:underline text-[11px] cursor-pointer"
+              >
+                لغو حالت برش
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Scrollable PDF Viewport with Transparent Interactive Canvas Overlay */}
-        <div className="flex-1 overflow-auto p-4 sm:p-6 flex justify-center items-start drafting-grid">
+        <div
+          ref={viewportScrollRef}
+          className="flex-1 overflow-auto p-4 sm:p-6 flex justify-center items-start drafting-grid"
+        >
           {isLoading ? (
             <div className="my-auto flex flex-col items-center gap-3 p-8 bg-white rounded-xl border border-[#E2E8F0] shadow-xs">
               <div className="w-8 h-8 border-2 border-[#0284C7] border-t-transparent rounded-full animate-spin" />
@@ -1265,6 +1624,64 @@ export const PdfReaderWorkspace: React.FC<PdfReaderWorkspaceProps> = ({
           )}
         </div>
       </div>
+
+      {/* Quick Page Navigator Grid Modal */}
+      {showPageGridModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-3xl w-full max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  پرش سریع به صفحات ({activePdfTitle})
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  صفحات دارای نشانک (★) یا ترسیم روی صفحه با رنگ متمایز مشخص شده‌اند
+                </p>
+              </div>
+              <button
+                onClick={() => setShowPageGridModal(false)}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 cursor-pointer"
+              >
+                بستن
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-2">
+              {Array.from({ length: totalPages }).map((_, idx) => {
+                const pdfP = idx + 1;
+                if (isDefaultTextbook && pdfP === 1) return null;
+                const displayNum = isDefaultTextbook ? pdfP - 1 : pdfP;
+                const isCurr = pdfP === currentPdfPage;
+                const isStar = bookmarkedPages.includes(pdfP);
+                const hasNotes = (pageAnnotations[pdfP]?.length || 0) > 0;
+                return (
+                  <button
+                    key={pdfP}
+                    onClick={() => {
+                      setCurrentPdfPage(pdfP);
+                      setShowPageGridModal(false);
+                    }}
+                    className={`p-2 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                      isCurr
+                        ? 'bg-sky-600 text-white border-sky-600 font-bold shadow-xs'
+                        : isStar
+                        ? 'bg-amber-50 text-amber-900 border-amber-300 font-bold'
+                        : hasNotes
+                        ? 'bg-emerald-50 text-emerald-900 border-emerald-300 font-semibold'
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    <span className="text-xs font-mono-num">{displayNum}</span>
+                    <span className="text-[9px]">
+                      {isStar ? '★ نشانک' : hasNotes ? '✎ ترسیم' : 'صفحه'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

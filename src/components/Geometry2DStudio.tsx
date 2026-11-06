@@ -53,6 +53,7 @@ import {
   recognizeSmartStroke,
   snapSmartLineEndpoint,
   snapSmartCircleRadius,
+  SmartRecognizedShape,
 } from '../utils/geometryMath';
 import { GEOMETRY_PRESETS, GeometryPreset } from '../data/textbookData';
 
@@ -61,6 +62,7 @@ export type Tool2D =
   | 'smart-pen'
   | 'pen'
   | 'highlighter'
+  | 'laser'
   | 'eraser'
   | 'point'
   | 'segment'
@@ -143,6 +145,8 @@ interface Geometry2DStudioProps {
   onJumpToTextbookPage?: (bookPage: number) => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  backgroundImage?: { dataUrl: string; title: string } | null;
+  onClearBackgroundImage?: () => void;
 }
 
 const LETTERS = [
@@ -155,6 +159,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   onJumpToTextbookPage,
   isFullscreen = false,
   onToggleFullscreen,
+  backgroundImage = null,
+  onClearBackgroundImage,
 }) => {
   const initialPreset =
     GEOMETRY_PRESETS.find((p) => p.id === initialPresetId) || GEOMETRY_PRESETS[0];
@@ -204,6 +210,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     snappedRadiusCm?: number | null;
   } | null>(null);
   const [activeFreehand, setActiveFreehand] = useState<FreehandStroke | null>(null);
+  const [liveSmartPreview, setLiveSmartPreview] = useState<SmartRecognizedShape | null>(null);
+  const [laserTrail, setLaserTrail] = useState<{ x: number; y: number; t: number }[]>([]);
 
   // Inline Text Note Input Modal
   const [pendingNotePos, setPendingNotePos] = useState<Point2D | null>(null);
@@ -242,6 +250,19 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const svgRef = useRef<SVGSVGElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const holdSnapTimerRef = useRef<number | null>(null);
+  const activeFreehandRef = useRef<FreehandStroke | null>(null);
+  activeFreehandRef.current = activeFreehand;
+
+  // Auto-fade laser pointer trail
+  useEffect(() => {
+    if (laserTrail.length === 0) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setLaserTrail((prev) => prev.filter((pt) => now - pt.t < 750));
+    }, 50);
+    return () => window.clearInterval(timer);
+  }, [laserTrail.length]);
 
   const showSmartToast = useCallback((msg: string) => {
     setSmartRecognitionToast(msg);
@@ -250,7 +271,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     }
     toastTimerRef.current = window.setTimeout(() => {
       setSmartRecognitionToast(null);
-    }, 3200);
+    }, 3400);
   }, []);
 
   // Save snapshot for Undo before modifying board
@@ -544,27 +565,39 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleUndo, handleRedo, handleDuplicateSelected, handleDeleteSelected, selectedItem]);
 
-  // Convert PointerEvent to SVG coordinates (760x500 viewBox)
+  // Convert PointerEvent to exact SVG viewBox coordinates using SVG CTM inverse
+  // (Eliminates any aspect-ratio or letterboxing offset on widescreen / Fullscreen / Touch TVs)
   const getSvgCoords = (e: React.PointerEvent<SVGSVGElement>): Point2D => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
-    const rect = svg.getBoundingClientRect();
-    const scaleX = 760 / rect.width;
-    const scaleY = 500 / rect.height;
-    let rawX = (e.clientX - rect.left) * scaleX;
-    let rawY = (e.clientY - rect.top) * scaleY;
+    let rawX = 0;
+    let rawY = 0;
+    const ctm = svg.getScreenCTM();
+    if (ctm) {
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const transformed = pt.matrixTransform(ctm.inverse());
+      rawX = transformed.x;
+      rawY = transformed.y;
+    } else {
+      const rect = svg.getBoundingClientRect();
+      rawX = (e.clientX - rect.left) * (760 / (rect.width || 760));
+      rawY = (e.clientY - rect.top) * (500 / (rect.height || 500));
+    }
+
     if (snapToGrid || boardBg === 'dots') {
       rawX = Math.round(rawX / 20) * 20;
       rawY = Math.round(rawY / 20) * 20;
     }
     return {
-      x: Math.max(12, Math.min(748, Math.round(rawX))),
-      y: Math.max(12, Math.min(488, Math.round(rawY))),
+      x: Math.round(rawX * 10) / 10,
+      y: Math.round(rawY * 10) / 10,
     };
   };
 
   // Find existing point within snap radius
-  const findNearestPoint = (coords: Point2D, radius = 18): CanvasPoint | undefined => {
+  const findNearestPoint = (coords: Point2D, radius = 16): CanvasPoint | undefined => {
     return points.find((p) => distance(p, coords) <= radius);
   };
 
@@ -592,7 +625,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       const p1 = getPointById(s.p1);
       const p2 = getPointById(s.p2);
       if (!p1 || !p2) return false;
-      return distance(midpoint(p1, p2), coords) < 22;
+      const foot = footOfPerpendicular(coords, p1, p2);
+      const segLen = distance(p1, p2);
+      const within =
+        distance(p1, foot) <= segLen + 8 && distance(p2, foot) <= segLen + 8;
+      return within && distance(coords, foot) < 16;
     });
     if (hitSeg) {
       pushHistory();
@@ -613,12 +650,408 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     }
   };
 
+  // Convert a recognized smart stroke into crisp geometric entities on the board
+  const applyRecognizedSmartShape = useCallback(
+    (recognized: SmartRecognizedShape, isHoldSnap = false): boolean => {
+      let updatedPts = [...points];
+      const ensurePt = (pt: Point2D): CanvasPoint => {
+        const near = updatedPts.find((p) => distance(p, pt) <= 15);
+        if (near) return near;
+        const lbl = getNextLabel(updatedPts);
+        const created: CanvasPoint = {
+          id: lbl,
+          label: lbl,
+          x: Math.round(pt.x),
+          y: Math.round(pt.y),
+          color: activeColor,
+        };
+        updatedPts.push(created);
+        return created;
+      };
+
+      const prefix = isHoldSnap ? '⏱️ تبدیل خودکار با مکث قلم:' : '✨ تشخیص قلم هوشمند:';
+
+      if (recognized.kind === 'erase-gesture') {
+        const { minX, maxX, minY, maxY } = recognized.bounds;
+        const pad = 16;
+        const inBox = (pt: Point2D) =>
+          pt.x >= minX - pad &&
+          pt.x <= maxX + pad &&
+          pt.y >= minY - pad &&
+          pt.y <= maxY + pad;
+
+        const removedPtIds = new Set(points.filter(inBox).map((p) => p.id));
+        setPoints((prev) => prev.filter((p) => !removedPtIds.has(p.id)));
+        setSegments((prev) =>
+          prev.filter((s) => {
+            if (removedPtIds.has(s.p1) || removedPtIds.has(s.p2)) return false;
+            const p1 = getPointById(s.p1);
+            const p2 = getPointById(s.p2);
+            if (!p1 || !p2) return true;
+            return !inBox(midpoint(p1, p2));
+          })
+        );
+        setCircles((prev) =>
+          prev.filter((c) => {
+            if (removedPtIds.has(c.center)) return false;
+            const cPt = getPointById(c.center);
+            return cPt ? !inBox(cPt) : true;
+          })
+        );
+        setPolygons((prev) =>
+          prev.filter((poly) => !poly.vertices.some((v) => removedPtIds.has(v)))
+        );
+        setStrokes((prev) => prev.filter((st) => !st.points.some(inBox)));
+        showSmartToast('🧹 ژست خط‌خطی هوشمند: اشکال زیر قلم پاک شدند');
+        return true;
+      }
+
+      if (recognized.kind === 'circle') {
+        const snapR = snapSmartCircleRadius(recognized.radius, 40);
+        const finalR = snapR.radiusPx;
+        const centerPt = ensurePt(recognized.center);
+        const radiusPt = ensurePt({
+          x: recognized.center.x + finalR,
+          y: recognized.center.y,
+        });
+        const newCir: CanvasCircle = {
+          id: `smart-cir-${Date.now()}`,
+          center: centerPt.id,
+          radiusPoint: radiusPt.id,
+          style: 'solid',
+          color: activeColor,
+        };
+        setPoints(updatedPts);
+        setCircles((prev) => [...prev, newCir]);
+        setSelectedItem({ kind: 'circle', id: newCir.id });
+        showSmartToast(
+          `${prefix} دایره دقیق به مرکز ${centerPt.label} و شعاع ${(finalR / 40).toFixed(1)} cm`
+        );
+        return true;
+      }
+
+      if (recognized.kind === 'segment') {
+        const snappedEnd = snapSmartLineEndpoint(recognized.start, recognized.end, 4);
+        const p1 = ensurePt(recognized.start);
+        const p2 = ensurePt(snappedEnd.point);
+        const newSeg: CanvasSegment = {
+          id: `smart-seg-${Date.now()}`,
+          p1: p1.id,
+          p2: p2.id,
+          kind: 'segment',
+          style: 'solid',
+          color: activeColor,
+        };
+        setPoints(updatedPts);
+        setSegments((prev) => [...prev, newSeg]);
+        setSelectedItem({ kind: 'segment', id: newSeg.id });
+        showSmartToast(
+          `${prefix} پاره‌خط صاف ${p1.label}${p2.label} (${(
+            distance(p1, p2) / 40
+          ).toFixed(1)} cm)`
+        );
+        return true;
+      }
+
+      if (recognized.kind === 'triangle') {
+        const [v1, v2, v3] = recognized.vertices;
+        const pA = ensurePt(v1);
+        const pB = ensurePt(v2);
+        const pC = ensurePt(v3);
+        const verts = [pA.id, pB.id, pC.id];
+        const newSegs: CanvasSegment[] = verts.map((v, i) => ({
+          id: `smart-tri-seg-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 3],
+          style: 'solid',
+          color: activeColor,
+        }));
+        const newPoly: CanvasPolygon = {
+          id: `smart-tri-${Date.now()}`,
+          vertices: verts,
+          fill: 'rgba(2, 132, 199, 0.09)',
+          color: activeColor,
+        };
+        setPoints(updatedPts);
+        setSegments((prev) => [...prev, ...newSegs]);
+        setPolygons((prev) => [...prev, newPoly]);
+        setSelectedItem({ kind: 'polygon', id: newPoly.id });
+        const subTitle =
+          recognized.subType === 'equilateral'
+            ? 'مثلث متساوی‌الاضلاع (۶۰°)'
+            : recognized.subType === 'right'
+            ? 'مثلث قائم‌الزاویه (۹۰° ∟)'
+            : recognized.subType === 'isosceles'
+            ? 'مثلث متساوی‌الساقین'
+            : 'مثلث';
+        showSmartToast(`${prefix} ${subTitle} ${pA.label}${pB.label}${pC.label}`);
+        return true;
+      }
+
+      if (recognized.kind === 'rectangle') {
+        const [v1, v2, v3, v4] = recognized.vertices;
+        const pA = ensurePt(v1);
+        const pB = ensurePt(v2);
+        const pC = ensurePt(v3);
+        const pD = ensurePt(v4);
+        const verts = [pA.id, pB.id, pC.id, pD.id];
+        const newSegs: CanvasSegment[] = verts.map((v, i) => ({
+          id: `smart-rect-seg-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 4],
+          style: 'solid',
+          color: activeColor,
+        }));
+        const newPoly: CanvasPolygon = {
+          id: `smart-rect-${Date.now()}`,
+          vertices: verts,
+          fill: 'rgba(2, 132, 199, 0.09)',
+          color: activeColor,
+        };
+        setPoints(updatedPts);
+        setSegments((prev) => [...prev, ...newSegs]);
+        setPolygons((prev) => [...prev, newPoly]);
+        setSelectedItem({ kind: 'polygon', id: newPoly.id });
+        showSmartToast(
+          `${prefix} ${recognized.isSquare ? 'مربع منتظم' : 'مستطیل'} ${pA.label}${pB.label}${pC.label}${pD.label}`
+        );
+        return true;
+      }
+
+      if (recognized.kind === 'polygon') {
+        const polyPts = recognized.vertices.map((v) => ensurePt(v));
+        const verts = polyPts.map((p) => p.id);
+        const newSegs: CanvasSegment[] = verts.map((v, i) => ({
+          id: `smart-poly-seg-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % verts.length],
+          style: 'solid',
+          color: activeColor,
+        }));
+        const newPoly: CanvasPolygon = {
+          id: `smart-poly-${Date.now()}`,
+          vertices: verts,
+          fill: 'rgba(2, 132, 199, 0.09)',
+          color: activeColor,
+        };
+        setPoints(updatedPts);
+        setSegments((prev) => [...prev, ...newSegs]);
+        setPolygons((prev) => [...prev, newPoly]);
+        setSelectedItem({ kind: 'polygon', id: newPoly.id });
+        showSmartToast(`${prefix} ${recognized.sides}ضلعی منتظم`);
+        return true;
+      }
+
+      if (recognized.kind === 'angle') {
+        const [ptStart, ptVertex, ptEnd] = recognized.vertices;
+        const p1 = ensurePt(ptStart);
+        const p2 = ensurePt(ptVertex);
+        const p3 = ensurePt(ptEnd);
+        if (recognized.isRightAngle) {
+          setPoints(updatedPts);
+          setSegments((prev) => [
+            ...prev,
+            { id: `smart-ang1-${Date.now()}`, p1: p2.id, p2: p1.id, style: 'solid', color: activeColor },
+            { id: `smart-ang2-${Date.now()}`, p1: p2.id, p2: p3.id, style: 'solid', color: activeColor },
+          ]);
+          showSmartToast(`${prefix} زاویه قائمه ۹۰° (∟) در رأس ${p2.label}`);
+          return true;
+        }
+        const rayEnd = angleBisectorRay(p1, p2, p3, 180);
+        const kPt = ensurePt(rayEnd);
+        setPoints(updatedPts);
+        setSegments((prev) => [
+          ...prev,
+          { id: `smart-ang1-${Date.now()}`, p1: p2.id, p2: p1.id, style: 'solid', color: activeColor },
+          { id: `smart-ang2-${Date.now()}`, p1: p2.id, p2: p3.id, style: 'solid', color: activeColor },
+          {
+            id: `smart-bis-${Date.now()}`,
+            p1: p2.id,
+            p2: kPt.id,
+            kind: 'ray',
+            style: 'accent',
+            label: 'نیمساز',
+          },
+        ]);
+        showSmartToast(`${prefix} زاویه ${p1.label}${p2.label}${p3.label} و نیمساز آن`);
+        return true;
+      }
+
+      return false;
+    },
+    [points, activeColor, showSmartToast]
+  );
+
+  // One-Tap Quick Geometric Shape Templates for instant classroom use
+  const insertQuickTemplate = (
+    template:
+      | 'equilateral'
+      | 'right-triangle'
+      | 'square'
+      | 'hexagon'
+      | 'circle-chord'
+      | 'parallel-transversal'
+  ) => {
+    pushHistory();
+    let updatedPts = [...points];
+    const addPt = (x: number, y: number): CanvasPoint => {
+      const lbl = getNextLabel(updatedPts);
+      const pt: CanvasPoint = {
+        id: lbl,
+        label: lbl,
+        x: Math.round(x),
+        y: Math.round(y),
+        color: activeColor,
+      };
+      updatedPts.push(pt);
+      return pt;
+    };
+
+    // Slight offset if shapes already exist near center
+    const jitter = (polygons.length + circles.length) % 3 === 0 ? 0 : ((polygons.length % 3) - 1) * 30;
+    const cx = 380 + jitter;
+    const cy = 250 + jitter;
+
+    if (template === 'equilateral') {
+      const side = 160;
+      const h = (side * Math.sqrt(3)) / 2;
+      const pA = addPt(cx, cy - (2 * h) / 3);
+      const pB = addPt(cx - side / 2, cy + h / 3);
+      const pC = addPt(cx + side / 2, cy + h / 3);
+      const verts = [pA.id, pB.id, pC.id];
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        ...verts.map((v, i) => ({
+          id: `tpl-eq-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 3],
+          style: 'solid' as const,
+          color: activeColor,
+        })),
+      ]);
+      setPolygons((prev) => [
+        ...prev,
+        { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.09)', color: activeColor },
+      ]);
+      showSmartToast('⚡ مثلث متساوی‌الاضلاع استاندارد درج شد');
+    } else if (template === 'right-triangle') {
+      // 3-4-5 right triangle (120px, 160px, 200px)
+      const pA = addPt(cx - 70, cy - 60);
+      const pB = addPt(cx - 70, cy + 60); // 90 deg vertex
+      const pC = addPt(cx + 90, cy + 60);
+      const verts = [pA.id, pB.id, pC.id];
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        ...verts.map((v, i) => ({
+          id: `tpl-rt-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 3],
+          style: 'solid' as const,
+          color: activeColor,
+        })),
+      ]);
+      setPolygons((prev) => [
+        ...prev,
+        { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.09)', color: activeColor },
+      ]);
+      showSmartToast('⚡ مثلث قائم‌الزاویه استاندارد (۳-۴-۵) با علامت زاویه قائمه ∟ درج شد');
+    } else if (template === 'square') {
+      const half = 70;
+      const pA = addPt(cx - half, cy - half);
+      const pB = addPt(cx + half, cy - half);
+      const pC = addPt(cx + half, cy + half);
+      const pD = addPt(cx - half, cy + half);
+      const verts = [pA.id, pB.id, pC.id, pD.id];
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        ...verts.map((v, i) => ({
+          id: `tpl-sq-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 4],
+          style: 'solid' as const,
+          color: activeColor,
+        })),
+      ]);
+      setPolygons((prev) => [
+        ...prev,
+        { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.09)', color: activeColor },
+      ]);
+      showSmartToast('⚡ مربع منتظم استاندارد درج شد');
+    } else if (template === 'hexagon') {
+      const r = 90;
+      const verts: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        const ang = (i * Math.PI) / 3;
+        const vp = addPt(cx + r * Math.cos(ang), cy + r * Math.sin(ang));
+        verts.push(vp.id);
+      }
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        ...verts.map((v, i) => ({
+          id: `tpl-hex-${Date.now()}-${i}`,
+          p1: v,
+          p2: verts[(i + 1) % 6],
+          style: 'solid' as const,
+          color: activeColor,
+        })),
+      ]);
+      setPolygons((prev) => [
+        ...prev,
+        { id: `tpl-poly-${Date.now()}`, vertices: verts, fill: 'rgba(2, 132, 199, 0.09)', color: activeColor },
+      ]);
+      showSmartToast('⚡ شش‌ضلعی منتظم استاندارد درج شد');
+    } else if (template === 'circle-chord') {
+      const r = 100;
+      const pO = addPt(cx, cy);
+      const pR = addPt(cx + r, cy);
+      const pA = addPt(cx - 80, cy + 60);
+      const pB = addPt(cx + 80, cy + 60);
+      const pM = addPt(cx, cy + 60);
+      setPoints(updatedPts);
+      setCircles((prev) => [
+        ...prev,
+        { id: `tpl-cir-${Date.now()}`, center: pO.id, radiusPoint: pR.id, style: 'solid', color: activeColor },
+      ]);
+      setSegments((prev) => [
+        ...prev,
+        { id: `tpl-ch1-${Date.now()}`, p1: pA.id, p2: pB.id, style: 'solid', color: activeColor, label: 'وتر' },
+        { id: `tpl-ch2-${Date.now()}`, p1: pO.id, p2: pM.id, style: 'accent', label: 'عمود بر وتر' },
+      ]);
+      showSmartToast('⚡ دایره، وتر و شعاع عمود بر وتر درج شد');
+    } else if (template === 'parallel-transversal') {
+      const p1 = addPt(cx - 140, cy - 55);
+      const p2 = addPt(cx + 140, cy - 55);
+      const p3 = addPt(cx - 140, cy + 55);
+      const p4 = addPt(cx + 140, cy + 55);
+      const p5 = addPt(cx - 75, cy - 110);
+      const p6 = addPt(cx + 75, cy + 110);
+      setPoints(updatedPts);
+      setSegments((prev) => [
+        ...prev,
+        { id: `tpl-pl1-${Date.now()}`, p1: p1.id, p2: p2.id, kind: 'line', style: 'solid', color: activeColor, label: 'd₁' },
+        { id: `tpl-pl2-${Date.now()}`, p1: p3.id, p2: p4.id, kind: 'line', style: 'solid', color: activeColor, label: 'd₂ || d₁' },
+        { id: `tpl-tr-${Date.now()}`, p1: p5.id, p2: p6.id, kind: 'line', style: 'accent', label: 'خط مورب' },
+      ]);
+      showSmartToast('⚡ دو خط موازی و خط مورب درج شد');
+    }
+  };
+
   // Pointer Down on SVG Canvas (Unified Mouse & Android Touch)
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (draggingInstrument) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     const coords = getSvgCoords(e);
-    const nearPt = findNearestPoint(coords, 18);
+    const nearPt = findNearestPoint(coords, 16);
+
+    // 0. LASER POINTER TOOL (Temporary glowing classroom pointer)
+    if (activeTool === 'laser') {
+      setLaserTrail([{ x: coords.x, y: coords.y, t: Date.now() }]);
+      return;
+    }
 
     // 1. SELECT & MOVE TOOL
     if (activeTool === 'select') {
@@ -683,6 +1116,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     // 2. SMART PEN, PEN & HIGHLIGHTER (Blank Whiteboard Freehand + Smart Shape Recognition)
     if (activeTool === 'smart-pen' || activeTool === 'pen' || activeTool === 'highlighter') {
       pushHistory();
+      setLiveSmartPreview(null);
       setActiveFreehand({
         id: `stroke-${Date.now()}`,
         type: activeTool === 'highlighter' ? 'highlighter' : 'pen',
@@ -713,8 +1147,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       const newPt: CanvasPoint = {
         id: label,
         label,
-        x: coords.x,
-        y: coords.y,
+        x: Math.round(coords.x),
+        y: Math.round(coords.y),
         color: activeColor,
       };
       setPoints((prev) => [...prev, newPt]);
@@ -733,9 +1167,10 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
       activeTool === 'regular-poly' ||
       activeTool === 'perp-bisector'
     ) {
+      const startPt = nearPt ? { x: nearPt.x, y: nearPt.y } : coords;
       setDragDrawStart({
-        startPt: nearPt ? { x: nearPt.x, y: nearPt.y } : coords,
-        currentPt: nearPt ? { x: nearPt.x, y: nearPt.y } : coords,
+        startPt,
+        currentPt: coords,
         startPointId: nearPt?.id,
         snappedAngle: null,
         snappedRadiusCm: null,
@@ -749,7 +1184,13 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     if (!targetPoint) {
       pushHistory();
       const label = getNextLabel(points);
-      targetPoint = { id: label, label, x: coords.x, y: coords.y, color: activeColor };
+      targetPoint = {
+        id: label,
+        label,
+        x: Math.round(coords.x),
+        y: Math.round(coords.y),
+        color: activeColor,
+      };
       currentPts = [...points, targetPoint];
       setPoints(currentPts);
     }
@@ -866,6 +1307,11 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const coords = getSvgCoords(e);
 
+    if (activeTool === 'laser' && e.buttons > 0) {
+      setLaserTrail((prev) => [...prev.slice(-28), { x: coords.x, y: coords.y, t: Date.now() }]);
+      return;
+    }
+
     if (draggingInstrument === 'ruler') {
       setRulerPos((prev) => ({ ...prev, x: coords.x - 140, y: coords.y - 22 }));
       return;
@@ -929,9 +1375,31 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     }
 
     if (activeFreehand) {
-      setActiveFreehand((prev) =>
-        prev ? { ...prev, points: [...prev.points, coords] } : null
-      );
+      const nextPts = [...activeFreehand.points, coords];
+      setActiveFreehand((prev) => (prev ? { ...prev, points: nextPts } : null));
+
+      // Live Smart Recognition Preview while drawing with Smart Pen
+      if (activeTool === 'smart-pen' && nextPts.length >= 8) {
+        const candidate = recognizeSmartStroke(nextPts);
+        setLiveSmartPreview(candidate.kind !== 'freehand' ? candidate : null);
+      }
+
+      // Hold-to-Snap (430ms pause at end of stroke converts freehand in-place)
+      if (holdSnapTimerRef.current) {
+        window.clearTimeout(holdSnapTimerRef.current);
+      }
+      if ((activeTool === 'smart-pen' || activeTool === 'pen') && nextPts.length >= 8) {
+        holdSnapTimerRef.current = window.setTimeout(() => {
+          const current = activeFreehandRef.current;
+          if (!current || current.points.length < 8) return;
+          const candidate = recognizeSmartStroke(current.points);
+          if (candidate.kind !== 'freehand') {
+            setActiveFreehand(null);
+            setLiveSmartPreview(null);
+            applyRecognizedSmartShape(candidate, true);
+          }
+        }, 430);
+      }
       return;
     }
 
@@ -941,7 +1409,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     }
 
     if (dragDrawStart) {
-      const nearPt = findNearestPoint(coords, 16);
+      const nearPt = findNearestPoint(coords, 14);
       if (nearPt) {
         setDragDrawStart((prev) =>
           prev
@@ -981,7 +1449,8 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
         activeTool === 'line' ||
         activeTool === 'ray'
       ) {
-        const snapLine = snapSmartLineEndpoint(dragDrawStart.startPt, coords, 6);
+        // Subtle 1.5° angle snap so the endpoint stays glued directly under the cursor tip
+        const snapLine = snapSmartLineEndpoint(dragDrawStart.startPt, coords, 1.5);
         setDragDrawStart((prev) =>
           prev
             ? {
@@ -1009,159 +1478,23 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
     setDraggingPointId(null);
     setDraggingInstrument(null);
     setDraggingWholeItem(null);
+    if (holdSnapTimerRef.current) {
+      window.clearTimeout(holdSnapTimerRef.current);
+      holdSnapTimerRef.current = null;
+    }
+    setLiveSmartPreview(null);
 
     if (activeFreehand) {
       const drawnPts = activeFreehand.points;
       const strokeToFinish = activeFreehand;
       setActiveFreehand(null);
 
-      // Helper to ensure point exists in points array
-      let updatedPts = [...points];
-      const ensurePt = (pt: Point2D): CanvasPoint => {
-        const near = updatedPts.find((p) => distance(p, pt) <= 16);
-        if (near) return near;
-        const lbl = getNextLabel(updatedPts);
-        const created: CanvasPoint = {
-          id: lbl,
-          label: lbl,
-          x: Math.max(12, Math.min(748, Math.round(pt.x))),
-          y: Math.max(12, Math.min(488, Math.round(pt.y))),
-          color: activeColor,
-        };
-        updatedPts.push(created);
-        return created;
-      };
-
       if (activeTool === 'smart-pen' && drawnPts.length >= 6) {
         const recognized = recognizeSmartStroke(drawnPts);
-
-        if (recognized.kind === 'circle') {
-          const snapR = snapSmartCircleRadius(recognized.radius, 40);
-          const finalR = snapR.radiusPx;
-          const centerPt = ensurePt(recognized.center);
-          const radiusPt = ensurePt({
-            x: recognized.center.x + finalR,
-            y: recognized.center.y,
-          });
-          const newCir: CanvasCircle = {
-            id: `smart-cir-${Date.now()}`,
-            center: centerPt.id,
-            radiusPoint: radiusPt.id,
-            style: 'solid',
-            color: activeColor,
-          };
-          setPoints(updatedPts);
-          setCircles((prev) => [...prev, newCir]);
-          setSelectedItem({ kind: 'circle', id: newCir.id });
-          showSmartToast(
-            `✨ تشخیص قلم هوشمند: دایره با مرکز ${centerPt.label} و شعاع ${(finalR / 40).toFixed(1)} cm`
-          );
-          return;
-        }
-
-        if (recognized.kind === 'segment') {
-          const snappedEnd = snapSmartLineEndpoint(recognized.start, recognized.end, 7);
-          const p1 = ensurePt(recognized.start);
-          const p2 = ensurePt(snappedEnd.point);
-          const newSeg: CanvasSegment = {
-            id: `smart-seg-${Date.now()}`,
-            p1: p1.id,
-            p2: p2.id,
-            kind: 'segment',
-            style: 'solid',
-            color: activeColor,
-          };
-          setPoints(updatedPts);
-          setSegments((prev) => [...prev, newSeg]);
-          setSelectedItem({ kind: 'segment', id: newSeg.id });
-          showSmartToast(
-            `✨ تشخیص قلم هوشمند: پاره‌خط صاف ${p1.label}${p2.label} (${(
-              distance(p1, p2) / 40
-            ).toFixed(1)} cm)`
-          );
-          return;
-        }
-
-        if (recognized.kind === 'triangle') {
-          const [v1, v2, v3] = recognized.vertices;
-          const pA = ensurePt(v1);
-          const pB = ensurePt(v2);
-          const pC = ensurePt(v3);
-          const verts = [pA.id, pB.id, pC.id];
-          const newSegs: CanvasSegment[] = verts.map((v, i) => ({
-            id: `smart-tri-seg-${Date.now()}-${i}`,
-            p1: v,
-            p2: verts[(i + 1) % 3],
-            style: 'solid',
-            color: activeColor,
-          }));
-          const newPoly: CanvasPolygon = {
-            id: `smart-tri-${Date.now()}`,
-            vertices: verts,
-            fill: 'rgba(2, 132, 199, 0.09)',
-            color: activeColor,
-          };
-          setPoints(updatedPts);
-          setSegments((prev) => [...prev, ...newSegs]);
-          setPolygons((prev) => [...prev, newPoly]);
-          setSelectedItem({ kind: 'polygon', id: newPoly.id });
-          showSmartToast(`✨ تشخیص قلم هوشمند: مثلث ${pA.label}${pB.label}${pC.label}`);
-          return;
-        }
-
-        if (recognized.kind === 'rectangle') {
-          const [v1, v2, v3, v4] = recognized.vertices;
-          const pA = ensurePt(v1);
-          const pB = ensurePt(v2);
-          const pC = ensurePt(v3);
-          const pD = ensurePt(v4);
-          const verts = [pA.id, pB.id, pC.id, pD.id];
-          const newSegs: CanvasSegment[] = verts.map((v, i) => ({
-            id: `smart-rect-seg-${Date.now()}-${i}`,
-            p1: v,
-            p2: verts[(i + 1) % 4],
-            style: 'solid',
-            color: activeColor,
-          }));
-          const newPoly: CanvasPolygon = {
-            id: `smart-rect-${Date.now()}`,
-            vertices: verts,
-            fill: 'rgba(2, 132, 199, 0.09)',
-            color: activeColor,
-          };
-          setPoints(updatedPts);
-          setSegments((prev) => [...prev, ...newSegs]);
-          setPolygons((prev) => [...prev, newPoly]);
-          setSelectedItem({ kind: 'polygon', id: newPoly.id });
-          showSmartToast(
-            `✨ تشخیص قلم هوشمند: چهارضلعی منظم ${pA.label}${pB.label}${pC.label}${pD.label}`
-          );
-          return;
-        }
-
-        if (recognized.kind === 'angle') {
-          const [ptStart, ptVertex, ptEnd] = recognized.vertices;
-          const p1 = ensurePt(ptStart);
-          const p2 = ensurePt(ptVertex);
-          const p3 = ensurePt(ptEnd);
-          const rayEnd = angleBisectorRay(p1, p2, p3, 180);
-          const kPt = ensurePt(rayEnd);
-          setPoints(updatedPts);
-          setSegments((prev) => [
-            ...prev,
-            { id: `smart-ang1-${Date.now()}`, p1: p2.id, p2: p1.id, style: 'solid', color: activeColor },
-            { id: `smart-ang2-${Date.now()}`, p1: p2.id, p2: p3.id, style: 'solid', color: activeColor },
-            {
-              id: `smart-bis-${Date.now()}`,
-              p1: p2.id,
-              p2: kPt.id,
-              kind: 'ray',
-              style: 'accent',
-              label: 'نیمساز',
-            },
-          ]);
-          showSmartToast(`✨ تشخیص قلم هوشمند: زاویه ${p1.label}${p2.label}${p3.label} و نیمساز آن`);
-          return;
+        if (recognized.kind !== 'freehand') {
+          if (applyRecognizedSmartShape(recognized, false)) {
+            return;
+          }
         }
       }
 
@@ -1430,12 +1763,13 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
   const toolHelperText: Record<Tool2D, string> = {
     select: 'روی هر نقطه، خط، دایره یا دست‌خط کلیک کنید تا انتخاب، جابه‌جا یا کپی شود.',
     'smart-pen':
-      'قلم هوشمند فعال است ✨ — دایره، خط صاف، مثلث، مستطیل یا زاویه را با دست بکشید تا خودکار به شکل هندسی دقیق تبدیل شود!',
-    pen: 'قلم آزاد تخته سفید فعال است — با ماوس یا لمس انگشت روی تخته بنویسید.',
+      'قلم هوشمند پیشرفته ✨ — دایره، خط، مثلث (متساوی‌الاضلاع/قائم‌الزاویه)، مربع، چندضلعی یا زاویه ۹۰° بکشید یا در انتهای رسم مکث کنید؛ خط‌خطی کردن روی شکل آن را پاک می‌کند!',
+    pen: 'قلم آزاد تخته سفید (با مکث کوتاه در انتهای خط، شکل خودکار منظم می‌شود).',
     highlighter: 'ماژیک هایلایت فعال است — روی زوایا یا فرمول‌ها بکشید.',
+    laser: 'لیزر تدریس فعال است 🔴 — برای اشاره موقت و توضیح قضیه روی تخته بکشید.',
     eraser: 'پاک‌کن فعال است — روی هر خط، شکل یا نقطه بکشید تا پاک شود.',
     point: 'روی هر جای تخته کلیک کنید تا یک نقطه نام‌گذاری‌شده ایجاد شود.',
-    segment: 'روی تخته بکشید (Drag) تا پاره‌خط با اندازه دقیق و جذب زاویه‌ای هوشمند رسم شود.',
+    segment: 'روی تخته بکشید (Drag) تا پاره‌خط دقیقاً در محل نوک قلم رسم شود.',
     line: 'روی تخته بکشید تا خط راست دوطرفه بی‌نهایت رسم شود.',
     ray: 'از نقطه مبدأ بکشید تا نیم‌خط رسم شود.',
     compass: 'از مرکز دایره به بیرون بکشید — پرگار هوشمند شعاع، قطر، محیط و مساحت زنده را نمایش می‌دهد.',
@@ -1482,6 +1816,7 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 { id: 'smart-pen', label: 'قلم هوشمند ✨', icon: Wand2 },
                 { id: 'pen', label: 'قلم آزاد', icon: PenTool },
                 { id: 'highlighter', label: 'ماژیک', icon: Highlighter },
+                { id: 'laser', label: 'لیزر تدریس 🔴', icon: Sparkles },
                 { id: 'eraser', label: 'پاک‌کن', icon: Eraser },
                 { id: 'compass', label: 'دایره هوشمند', icon: Compass },
                 { id: 'segment', label: 'پاره‌خط', icon: Minus },
@@ -1710,6 +2045,65 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
           </div>
         </div>
 
+        {/* One-Click Smart Shape Templates Strip (Instant 1-Tap Classroom Shapes) */}
+        <div className="px-3 py-1 bg-slate-50/90 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap text-[11px]">
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="font-bold text-slate-600 ml-1">⚡ درج سریع شکل استاندارد:</span>
+            <button
+              onClick={() => insertQuickTemplate('equilateral')}
+              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
+            >
+              △ متساوی‌الاضلاع (۶۰°)
+            </button>
+            <button
+              onClick={() => insertQuickTemplate('right-triangle')}
+              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
+            >
+              ∟ مثلث قائم‌الزاویه (۳-۴-۵)
+            </button>
+            <button
+              onClick={() => insertQuickTemplate('square')}
+              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
+            >
+              □ مربع منتظم
+            </button>
+            <button
+              onClick={() => insertQuickTemplate('hexagon')}
+              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
+            >
+              ⬡ شش‌ضلعی منتظم
+            </button>
+            <button
+              onClick={() => insertQuickTemplate('circle-chord')}
+              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
+            >
+              ⊙ دایره و عمود بر وتر
+            </button>
+            <button
+              onClick={() => insertQuickTemplate('parallel-transversal')}
+              className="px-2 py-0.5 rounded bg-white hover:bg-sky-50 text-slate-700 hover:text-sky-800 border border-slate-200 font-medium cursor-pointer"
+            >
+              ∥ خطوط موازی و مورب
+            </button>
+          </div>
+
+          {backgroundImage && (
+            <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-amber-900">
+              <span className="font-semibold truncate max-w-[180px]">
+                📄 پس‌زمینه: {backgroundImage.title}
+              </span>
+              {onClearBackgroundImage && (
+                <button
+                  onClick={onClearBackgroundImage}
+                  className="text-rose-600 hover:underline font-bold cursor-pointer"
+                >
+                  حذف پس‌زمینه
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Instruction Strip + Smart Pen Recognition Badge */}
         <div className="px-4 py-1.5 bg-sky-50/70 border-b border-slate-200 flex items-center justify-between gap-4 text-xs text-slate-700">
           <div className="flex items-center gap-2 truncate">
@@ -1768,11 +2162,24 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
           >
-            {/* Coordinate Axes when 'axes' background is selected */}
+            {/* Optional Cropped PDF Exercise Background Layer */}
+            {backgroundImage && (
+              <image
+                href={backgroundImage.dataUrl}
+                x="40"
+                y="15"
+                width="680"
+                height="470"
+                preserveAspectRatio="xMidYMid contain"
+                opacity="0.92"
+              />
+            )}
+
+            {/* Coordinate Axes when 'axes' background is selected (extended across widescreen viewBox) */}
             {boardBg === 'axes' && (
               <g opacity="0.65">
-                <line x1="0" y1="250" x2="760" y2="250" stroke="#475569" strokeWidth="1.5" />
-                <line x1="380" y1="0" x2="380" y2="500" stroke="#475569" strokeWidth="1.5" />
+                <line x1="-400" y1="250" x2="1160" y2="250" stroke="#475569" strokeWidth="1.5" />
+                <line x1="380" y1="-300" x2="380" y2="800" stroke="#475569" strokeWidth="1.5" />
                 <text x="742" y="244" fontSize="11" fontWeight="bold" fill="#334155">
                   x
                 </text>
@@ -1787,10 +2194,10 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
 
             {/* Lattice Dots when Pick's Theorem / Dots Mode is active */}
             {boardBg === 'dots' &&
-              Array.from({ length: 18 }).map((_, gx) =>
-                Array.from({ length: 12 }).map((__, gy) => {
-                  const lx = (gx + 1) * 40;
-                  const ly = (gy + 1) * 40;
+              Array.from({ length: 24 }).map((_, gx) =>
+                Array.from({ length: 14 }).map((__, gy) => {
+                  const lx = (gx - 2) * 40;
+                  const ly = (gy - 1) * 40;
                   return (
                     <circle
                       key={`lat-${gx}-${gy}`}
@@ -1857,6 +2264,153 @@ export const Geometry2DStudio: React.FC<Geometry2DStudioProps> = ({
                 strokeDasharray={activeTool === 'smart-pen' ? '5 3' : undefined}
                 opacity={activeFreehand.type === 'highlighter' ? 0.34 : 0.95}
               />
+            )}
+
+            {/* Live Smart Pen Ghost Recognition Preview while drawing */}
+            {liveSmartPreview && liveSmartPreview.kind !== 'freehand' && (
+              <g opacity="0.88" className="pointer-events-none">
+                {liveSmartPreview.kind === 'circle' && (
+                  <circle
+                    cx={liveSmartPreview.center.x}
+                    cy={liveSmartPreview.center.y}
+                    r={liveSmartPreview.radius}
+                    fill="rgba(16, 185, 129, 0.08)"
+                    stroke="#059669"
+                    strokeWidth="2.5"
+                    strokeDasharray="6 4"
+                  />
+                )}
+                {liveSmartPreview.kind === 'segment' && (
+                  <line
+                    x1={liveSmartPreview.start.x}
+                    y1={liveSmartPreview.start.y}
+                    x2={liveSmartPreview.end.x}
+                    y2={liveSmartPreview.end.y}
+                    stroke="#059669"
+                    strokeWidth="2.8"
+                    strokeDasharray="6 4"
+                  />
+                )}
+                {(liveSmartPreview.kind === 'triangle' ||
+                  liveSmartPreview.kind === 'rectangle' ||
+                  liveSmartPreview.kind === 'polygon') && (
+                  <polygon
+                    points={liveSmartPreview.vertices.map((v) => `${v.x},${v.y}`).join(' ')}
+                    fill="rgba(16, 185, 129, 0.08)"
+                    stroke="#059669"
+                    strokeWidth="2.5"
+                    strokeDasharray="6 4"
+                  />
+                )}
+                {liveSmartPreview.kind === 'angle' && (
+                  <polyline
+                    points={liveSmartPreview.vertices.map((v) => `${v.x},${v.y}`).join(' ')}
+                    fill="none"
+                    stroke="#059669"
+                    strokeWidth="2.5"
+                    strokeDasharray="6 4"
+                  />
+                )}
+                {liveSmartPreview.kind === 'erase-gesture' && (
+                  <rect
+                    x={liveSmartPreview.bounds.minX - 8}
+                    y={liveSmartPreview.bounds.minY - 8}
+                    width={liveSmartPreview.bounds.maxX - liveSmartPreview.bounds.minX + 16}
+                    height={liveSmartPreview.bounds.maxY - liveSmartPreview.bounds.minY + 16}
+                    rx="6"
+                    fill="rgba(220, 38, 38, 0.12)"
+                    stroke="#DC2626"
+                    strokeWidth="2"
+                    strokeDasharray="4 4"
+                  />
+                )}
+              </g>
+            )}
+
+            {/* Automatic Right-Angle Square Markers (∟) on 90° vertices */}
+            {points.map((vertex) => {
+              const connected = segments.filter(
+                (s) => s.p1 === vertex.id || s.p2 === vertex.id
+              );
+              if (connected.length < 2) return null;
+              const markers: React.ReactNode[] = [];
+              for (let i = 0; i < connected.length; i++) {
+                for (let j = i + 1; j < connected.length; j++) {
+                  const s1 = connected[i];
+                  const s2 = connected[j];
+                  const other1 = getPointById(s1.p1 === vertex.id ? s1.p2 : s1.p1);
+                  const other2 = getPointById(s2.p1 === vertex.id ? s2.p2 : s2.p1);
+                  if (!other1 || !other2) continue;
+                  const v1x = other1.x - vertex.x;
+                  const v1y = other1.y - vertex.y;
+                  const v2x = other2.x - vertex.x;
+                  const v2y = other2.y - vertex.y;
+                  const len1 = Math.hypot(v1x, v1y);
+                  const len2 = Math.hypot(v2x, v2y);
+                  if (len1 < 22 || len2 < 22) continue;
+                  const cosTheta = (v1x * v2x + v1y * v2y) / (len1 * len2);
+                  const deg = (Math.acos(Math.max(-1, Math.min(1, cosTheta))) * 180) / Math.PI;
+                  if (Math.abs(deg - 90) <= 2.2) {
+                    const size = 13;
+                    const u1x = (v1x / len1) * size;
+                    const u1y = (v1y / len1) * size;
+                    const u2x = (v2x / len2) * size;
+                    const u2y = (v2y / len2) * size;
+                    const p1x = vertex.x + u1x;
+                    const p1y = vertex.y + u1y;
+                    const p2x = vertex.x + u1x + u2x;
+                    const p2y = vertex.y + u1y + u2y;
+                    const p3x = vertex.x + u2x;
+                    const p3y = vertex.y + u2y;
+                    markers.push(
+                      <g key={`ra-${vertex.id}-${s1.id}-${s2.id}`}>
+                        <path
+                          d={`M ${p1x} ${p1y} L ${p2x} ${p2y} L ${p3x} ${p3y}`}
+                          fill="rgba(5, 150, 105, 0.14)"
+                          stroke="#059669"
+                          strokeWidth="1.6"
+                        />
+                        <circle
+                          cx={vertex.x + (u1x + u2x) * 0.45}
+                          cy={vertex.y + (u1y + u2y) * 0.45}
+                          r={1.6}
+                          fill="#059669"
+                        />
+                      </g>
+                    );
+                  }
+                }
+              }
+              return markers;
+            })}
+
+            {/* Laser Pointer Auto-Fading Trail */}
+            {laserTrail.length > 1 && (
+              <g className="pointer-events-none">
+                <polyline
+                  points={laserTrail.map((p) => `${p.x},${p.y}`).join(' ')}
+                  fill="none"
+                  stroke="#EF4444"
+                  strokeWidth="5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity="0.35"
+                />
+                <polyline
+                  points={laserTrail.map((p) => `${p.x},${p.y}`).join(' ')}
+                  fill="none"
+                  stroke="#DC2626"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <circle
+                  cx={laserTrail[laserTrail.length - 1].x}
+                  cy={laserTrail[laserTrail.length - 1].y}
+                  r={6}
+                  fill="#EF4444"
+                />
+              </g>
             )}
 
             {/* Compass Circles & Construction Arcs */}

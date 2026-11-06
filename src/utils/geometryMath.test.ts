@@ -96,5 +96,33 @@ test('recognizeSmartStroke detects hand-drawn circles, segments, and triangles',
   }));
   const segRes = recognizeSmartStroke(segPts);
   assert.equal(segRes.kind, 'segment');
+
+  // 3. Hand-drawn L-shape near 90 deg -> snaps to exact 90 deg right angle
+  const anglePts = [
+    { x: 100, y: 100 },
+    { x: 100, y: 150 },
+    { x: 102, y: 200 },
+    { x: 150, y: 202 },
+    { x: 200, y: 204 },
+  ];
+  const angleRes = recognizeSmartStroke(anglePts);
+  assert.equal(angleRes.kind, 'angle');
+  if (angleRes.kind === 'angle') {
+    assert.equal(angleRes.deg, 90);
+    assert.equal(angleRes.isRightAngle, true);
+  }
+
+  // 4. Scratch-out zigzag gesture -> detected as erase-gesture
+  const scratchPts = [
+    { x: 200, y: 200 },
+    { x: 280, y: 210 },
+    { x: 205, y: 220 },
+    { x: 285, y: 230 },
+    { x: 200, y: 240 },
+    { x: 290, y: 250 },
+    { x: 210, y: 260 },
+  ];
+  const scratchRes = recognizeSmartStroke(scratchPts);
+  assert.equal(scratchRes.kind, 'erase-gesture');
 });
 

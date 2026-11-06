@@ -14,6 +14,10 @@ export default function App() {
   const [targetPresetId, setTargetPresetId] = useState<string>('preset-perp-bisector');
   const [targetSpatialMode, setTargetSpatialMode] = useState<SpatialMode>('cross-section');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [boardBackgroundImage, setBoardBackgroundImage] = useState<{
+    dataUrl: string;
+    title: string;
+  } | null>(null);
 
   // Persistent root-level Fullscreen so switching between tabs never exits Fullscreen
   const toggleFullscreen = useCallback(() => {
@@ -54,6 +58,11 @@ export default function App() {
 
   const handleOpen2DStudio = (presetId: string) => {
     setTargetPresetId(presetId);
+    setActiveTab('studio-2d');
+  };
+
+  const handleSendPdfImageTo2DStudio = (dataUrl: string, title: string) => {
+    setBoardBackgroundImage({ dataUrl, title });
     setActiveTab('studio-2d');
   };
 
@@ -151,6 +160,8 @@ export default function App() {
             onJumpToTextbookPage={handleJumpToPdfPage}
             isFullscreen={isFullscreen}
             onToggleFullscreen={toggleFullscreen}
+            backgroundImage={boardBackgroundImage}
+            onClearBackgroundImage={() => setBoardBackgroundImage(null)}
           />
         )}
 
@@ -161,6 +172,7 @@ export default function App() {
             onOpen3DLab={handleOpen3DLab}
             isFullscreen={isFullscreen}
             onToggleFullscreen={toggleFullscreen}
+            onSendImageTo2DStudio={handleSendPdfImageTo2DStudio}
           />
         )}
 
